@@ -2,7 +2,7 @@
 # launch as the following (e.g. in a screen session) and wait ~5 days:
 # $ torchrun --standalone --nproc_per_node=8 train.py config/train_gpt2.py
 
-wandb_log = True
+wandb_log = False
 wandb_project = 'owt'
 wandb_run_name='gpt2-124M'
 
@@ -11,6 +11,11 @@ wandb_run_name='gpt2-124M'
 batch_size = 12
 block_size = 1024
 gradient_accumulation_steps = 5 * 8
+
+# baby GPT model :)
+n_layer = 16
+n_head = 16
+n_embd = 1024
 
 # this makes total number of tokens be 300B
 max_iters = 600000
@@ -23,3 +28,5 @@ log_interval = 10
 
 # weight decay
 weight_decay = 1e-1
+
+
