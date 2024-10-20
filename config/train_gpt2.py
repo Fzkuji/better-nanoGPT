@@ -12,10 +12,10 @@ batch_size = 12
 block_size = 1024
 gradient_accumulation_steps = 5 * 8
 
-# baby GPT model :)
-n_layer = 16
-n_head = 16
-n_embd = 1024
+# model
+n_layer = 12
+n_head = 12
+n_embd = 768
 
 # this makes total number of tokens be 300B
 max_iters = 600000
