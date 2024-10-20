@@ -24,7 +24,8 @@ lr_decay_iters = 600000
 # eval stuff
 eval_interval = 1000
 eval_iters = 200
-log_interval = 10
+log_interval = 1
+
 
 # weight decay
 weight_decay = 1e-1

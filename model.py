@@ -79,7 +79,9 @@ class CausalSelfAttention(nn.Module):
                 v = torch.cat((past_values, v), dim=2)
 
             # Update cache with most recent block_size keys and values
-            past_key_values = (k[:, :, -self.block_size:], v[:, :, -self.block_size:])
+            present = (k[:, :, -self.block_size:], v[:, :, -self.block_size:])
+        else:
+            present = None
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
@@ -98,7 +100,7 @@ class CausalSelfAttention(nn.Module):
 
         # output projection
         y = self.resid_dropout(self.c_proj(y))
-        return y, past_key_values
+        return y, present
 
 
 class MLP(nn.Module):
@@ -127,10 +129,11 @@ class Block(nn.Module):
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
 
-    def forward(self, x):
-        x = x + self.attn(self.ln_1(x))
+    def forward(self, x, past_key_values=None, use_cache=False):
+        attn_output, present = self.attn(self.ln_1(x), past_key_values=past_key_values, use_cache=use_cache)
+        x = x + attn_output
         x = x + self.mlp(self.ln_2(x))
-        return x
+        return x, present
 
 
 @dataclass
@@ -193,15 +196,20 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None):
+    def forward(self, idx, targets=None, past_key_values=None):
         device = idx.device
         b, t = idx.size()
         assert t <= (self.config.block_size - 1) * (self.config.n_layer - 1) + 1, f"Cannot forward sequence of length {t}, block size is only {(self.config.block_size - 1) * (self.config.n_layer - 1) + 1}"
 
         # forward the GPT model itself
         x = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
-        for block in self.transformer.h:
-            x = block(x)
+
+        presents = []
+        for i, block in enumerate(self.transformer.h):
+            past = past_key_values[i] if past_key_values is not None else None
+            x, present = block(x, past_key_values=past, use_cache=True if targets is None else False)
+            if targets is None:
+                presents.append(present)
         x = self.transformer.ln_f(x)
 
         if targets is not None:
@@ -213,7 +221,7 @@ class GPT(nn.Module):
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
             loss = None
 
-        return logits, loss
+        return logits, loss, presents if targets is None else None
 
     def crop_block_size(self, block_size):
         # model surgery to decrease the block size if necessary
@@ -331,6 +339,7 @@ class GPT(nn.Module):
         the sequence max_new_tokens times, feeding the predictions back into the model each time.
         Most likely you'll want to make sure to be in model.eval() mode of operation for this.
         """
+        past_key_values = None
         for _ in range(max_new_tokens):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
