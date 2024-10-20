@@ -10,6 +10,7 @@ wandb_run_name='gpt2-124M'
 # 12 batch size * 1024 block size * 5 gradaccum * 8 GPUs = 491,520
 batch_size = 12
 block_size = 1024
+input_size = 2048  # size of the input to the model
 gradient_accumulation_steps = 5 * 8
 
 # model

@@ -47,16 +47,18 @@ class CausalSelfAttention(nn.Module):
         self.block_size = config.block_size
         self.rotary_emb = RotaryEmbedding(dim=int((self.n_embd // self.n_head) / 2))
         # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
-        self.flash = False
+        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
         if not self.flash:
-            # print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
-            max_input_size = (self.block_size - 1) * (config.n_layer - 1) + 1
-            # causal mask to ensure that attention is only applied to the left in the input sequence
-            buffer = torch.tril(torch.ones(max_input_size, max_input_size))
-            # Apply sliding window to the mask
-            for i in range(max_input_size):
-                buffer[i, :max(0, i - self.block_size + 1)] = 0  # Set values outside the window to 0
-            self.register_buffer("bias", buffer.view(1, 1, max_input_size, max_input_size))
+            print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
+
+        # create the sliding window mask
+        max_input_size = (self.block_size - 1) * (config.n_layer - 1) + 1
+        # causal mask to ensure that attention is only applied to the left in the input sequence
+        buffer = torch.tril(torch.ones(max_input_size, max_input_size))
+        # apply sliding window to the mask
+        for i in range(max_input_size):
+            buffer[i, :max(0, i - self.block_size + 1)] = 0  # Set values outside the window to 0
+        self.register_buffer("bias", buffer.view(1, 1, max_input_size, max_input_size))
 
     def forward(self, x, past_key_values=None, use_cache=False):
         B, T, C = x.size()  # batch size, sequence length, embedding dimensionality (n_embd)
@@ -83,10 +85,17 @@ class CausalSelfAttention(nn.Module):
         else:
             present = None
 
+        # # 画出self.bias[:, :, :T, :T]的图像 用matplotlib
+        # import matplotlib.pyplot as plt
+        # plt.imshow(self.bias[:, :, :T, :T].squeeze().detach().cpu().numpy())
+        # plt.show()
+        #
+        # return
+
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
             # efficient attention using Flash Attention CUDA kernels
-            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None,
+            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=self.bias[:, :, :T, :T],
                                                                  dropout_p=self.dropout if self.training else 0,
                                                                  is_causal=True)
         else:
