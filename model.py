@@ -85,13 +85,6 @@ class CausalSelfAttention(nn.Module):
         else:
             present = None
 
-        # # 画出self.bias[:, :, :T, :T]的图像 用matplotlib
-        # import matplotlib.pyplot as plt
-        # plt.imshow(self.bias[:, :, :T, :T].squeeze().detach().cpu().numpy())
-        # plt.show()
-        #
-        # return
-
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
             # efficient attention using Flash Attention CUDA kernels
