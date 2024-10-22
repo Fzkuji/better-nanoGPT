@@ -27,6 +27,7 @@ import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
+from data.shakespeare.prepare import val_ids
 from model import GPTConfig, GPT
 
 # -----------------------------------------------------------------------------
@@ -48,7 +49,8 @@ dataset = 'shakespeare_char'
 gradient_accumulation_steps = 5 * 8  # used to simulate larger batch sizes
 batch_size = 12  # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024
-input_size = 2048  # size of the input to the model
+train_size = 1024  # size of the input to the model
+val_size = 2048  # size of the input to the model
 # model
 n_layer = 12
 n_head = 12
@@ -121,11 +123,14 @@ def get_batch(split):
     # https://stackoverflow.com/questions/45132940/numpy-memmap-memory-usage-want-to-iterate-once/61472122#61472122
     if split == 'train':
         data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
+        ix = torch.randint(len(data) - train_size, (batch_size,))
+        x = torch.stack([torch.from_numpy((data[i:i + train_size]).astype(np.int64)) for i in ix])
+        y = torch.stack([torch.from_numpy((data[i + 1:i + 1 + train_size]).astype(np.int64)) for i in ix])
     else:
         data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
-    ix = torch.randint(len(data) - input_size, (batch_size,))
-    x = torch.stack([torch.from_numpy((data[i:i + input_size]).astype(np.int64)) for i in ix])
-    y = torch.stack([torch.from_numpy((data[i + 1:i + 1 + input_size]).astype(np.int64)) for i in ix])
+        ix = torch.randint(len(data) - val_size, (batch_size,))
+        x = torch.stack([torch.from_numpy((data[i:i + val_size]).astype(np.int64)) for i in ix])
+        y = torch.stack([torch.from_numpy((data[i + 1:i + 1 + val_size]).astype(np.int64)) for i in ix])
     if device_type == 'cuda':
         # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
         x, y = x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
