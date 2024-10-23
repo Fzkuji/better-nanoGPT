@@ -33,10 +33,6 @@ class CausalSelfAttention(nn.Module):
         self.n_embd = config.n_embd
         self.dropout = config.dropout
         self.block_size = config.block_size
-        # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
-        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
-        if not self.flash:
-            print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
 
         # create the sliding window mask
         max_input_size = (self.block_size - 1) * (config.n_layer - 1) + 1
@@ -46,6 +42,12 @@ class CausalSelfAttention(nn.Module):
         for i in range(max_input_size):
             buffer[i, :max(0, i - self.block_size + 1)] = 0  # Set values outside the window to 0
         self.register_buffer("bias", buffer.view(1, 1, max_input_size, max_input_size))
+
+        # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
+        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+        if self.flash:
+            # 将bias转换为torch.bool类型
+            self.bias = self.bias.bool()
 
     def forward(self, x, past_key_values=None, use_cache=False):
         B, T, C = x.size()  # batch size, sequence length, embedding dimensionality (n_embd)
