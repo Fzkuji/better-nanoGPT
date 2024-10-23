@@ -17,6 +17,8 @@ dataset = 'shakespeare_char'
 gradient_accumulation_steps = 1
 batch_size = 64
 block_size = 256 # context of up to 256 previous characters
+train_size = 512
+val_size = 1024
 
 # baby GPT model :)
 n_layer = 6

@@ -62,7 +62,6 @@ class CausalSelfAttention(nn.Module):
                 past_keys, past_values = past_key_values
                 k = torch.cat((past_keys, k), dim=2)
                 v = torch.cat((past_values, v), dim=2)
-
             # Update cache with most recent block_size keys and values
             present = (k[:, :, -self.block_size:], v[:, :, -self.block_size:])
         else:
@@ -325,9 +324,10 @@ class GPT(nn.Module):
         Most likely you'll want to make sure to be in model.eval() mode of operation for this.
         """
         past_key_values = None
+        idx_next = idx
         for _ in range(max_new_tokens):
             # forward the model to get the logits for the index in the sequence
-            logits, _, past_key_values = self(idx, past_key_values=past_key_values)
+            logits, _, past_key_values = self(idx_next, past_key_values=past_key_values)
             # pluck the logits at the final step and scale by desired temperature
             logits = logits[:, -1, :] / temperature
             # optionally crop the logits to only the top k options
