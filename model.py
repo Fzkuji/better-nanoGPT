@@ -15,6 +15,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from utils import RMSNorm
+import warnings
 
 
 class CausalSelfAttention(nn.Module):
@@ -39,7 +40,7 @@ class CausalSelfAttention(nn.Module):
             print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
 
         # create the sliding window mask
-        max_input_size = (self.block_size - 1) * (config.n_layer - 1) + 1
+        max_input_size = (self.block_size - 1) * config.n_layer + 1
         # causal mask to ensure that attention is only applied to the left in the input sequence
         buffer = torch.tril(torch.ones(max_input_size, max_input_size))
         # apply sliding window to the mask
@@ -181,9 +182,17 @@ class GPT(nn.Module):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, idx, targets=None, past_key_values=None):
-        device = idx.device
+
+        # --------------------------------------------------------------
+        # Check if the input sequence length exceeds the model's memory
+        # capacity and issue a warning if necessary, indicating potential
+        # information loss due to overflow.
+        # --------------------------------------------------------------
         b, t = idx.size()
-        assert t <= (self.config.block_size - 1) * (self.config.n_layer - 1) + 1, f"Cannot forward sequence of length {t}, block size is only {(self.config.block_size - 1) * (self.config.n_layer - 1) + 1}"
+        warnings.warn(
+            f"Input sequence length {t} exceeds the model's memory capacity of {(self.config.block_size - 1) * self.config.n_layer + 1}, which may lead to unavoidable information loss.",
+            UserWarning
+        ) if t > (self.config.block_size - 1) * self.config.n_layer + 1 else None
 
         # forward the GPT model itself
         x = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)

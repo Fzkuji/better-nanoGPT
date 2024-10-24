@@ -20,6 +20,7 @@ import os
 import time
 import math
 import pickle
+from tqdm import tqdm
 from contextlib import nullcontext
 
 import numpy as np
@@ -228,7 +229,8 @@ def estimate_loss():
     model.eval()
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
-        for k in range(eval_iters):
+        # Add progress bar for eval_iters loop
+        for k in tqdm(range(eval_iters), desc=f"Evaluating {split} set"):
             X, Y = get_batch(split)
             with ctx:
                 logits, loss, _ = model(X, Y)
