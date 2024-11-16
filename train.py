@@ -48,7 +48,8 @@ wandb_run_name = 'gpt2'  # 'run' + str(time.time())
 # data
 dataset = 'openwebtext'  # 'openwebtext' or 'shakespeare' or 'shakespeare_char'
 gradient_accumulation_steps = 5 * 8  # used to simulate larger batch sizes
-batch_size = 12  # if gradient_accumulation_steps > 1, this is the micro-batch size
+train_batch_size = 12  # if gradient_accumulation_steps > 1, this is the micro-batch size
+val_batch_size = 12  # must fit in GPU memory
 block_size = 1024
 train_size = 1024  # size of the input to the model
 val_size = 2048  # size of the input to the model
@@ -102,7 +103,7 @@ else:
     master_process = True
     seed_offset = 0
     ddp_world_size = 1
-tokens_per_iter = gradient_accumulation_steps * ddp_world_size * batch_size * block_size
+tokens_per_iter = gradient_accumulation_steps * ddp_world_size * train_batch_size * block_size
 print(f"tokens per iteration will be: {tokens_per_iter:,}")
 
 if master_process:
@@ -119,19 +120,18 @@ ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=
 data_dir = os.path.join('data', dataset)
 
 
-def get_batch(split):
+def get_batch(split, batch_size=16, length=2048):
     # We recreate np.memmap every batch to avoid a memory leak, as per
     # https://stackoverflow.com/questions/45132940/numpy-memmap-memory-usage-want-to-iterate-once/61472122#61472122
     if split == 'train':
         data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
-        ix = torch.randint(len(data) - train_size, (batch_size,))
-        x = torch.stack([torch.from_numpy((data[i:i + train_size]).astype(np.int64)) for i in ix])
-        y = torch.stack([torch.from_numpy((data[i + 1:i + 1 + train_size]).astype(np.int64)) for i in ix])
     else:
         data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
-        ix = torch.randint(len(data) - val_size, (batch_size,))
-        x = torch.stack([torch.from_numpy((data[i:i + val_size]).astype(np.int64)) for i in ix])
-        y = torch.stack([torch.from_numpy((data[i + 1:i + 1 + val_size]).astype(np.int64)) for i in ix])
+
+    ix = torch.randint(len(data) - length, (batch_size,))
+    x = torch.stack([torch.from_numpy((data[i:i + length]).astype(np.int64)) for i in ix])
+    y = torch.stack([torch.from_numpy((data[i + 1:i + 1 + length]).astype(np.int64)) for i in ix])
+
     if device_type == 'cuda':
         # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
         x, y = x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
@@ -229,13 +229,24 @@ def estimate_loss():
     model.eval()
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
+        segment_losses = []
         # Add progress bar for eval_iters loop
         for k in tqdm(range(eval_iters), desc=f"Evaluating {split} set"):
-            X, Y = get_batch(split)
+            if split == 'train':
+                X, Y = get_batch(split, train_batch_size, train_size)
+            elif split == 'val':
+                X, Y = get_batch(split, val_batch_size, val_size)
+            else:
+                raise ValueError(f"invalid split: {split}")
+
             with ctx:
-                logits, loss, _ = model(X, Y)
+                logits, loss, segment_loss, _ = model(X, Y)
             losses[k] = loss.item()
+            segment_losses.append(segment_loss)
+
         out[split] = losses.mean()
+        out[f'{split}_segment_losses'] = [sum(x) / len(x) for x in zip(*segment_losses)]
+
     model.train()
     return out
 
@@ -279,13 +290,23 @@ while True:
         losses = estimate_loss()
         print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
         if wandb_log:
-            wandb.log({
+            # Log the segment losses along with other metrics
+            wandb_log_dict = {
                 "iter": iter_num,
                 "train/loss": losses['train'],
                 "val/loss": losses['val'],
                 "lr": lr,
                 "mfu": running_mfu * 100,  # convert to percentage
-            })
+            }
+
+            # Add segment losses for train and val
+            for i, seg_loss in enumerate(losses['train_segment_losses']):
+                wandb_log_dict[f"train/segment_loss_{i}"] = seg_loss
+            for i, seg_loss in enumerate(losses['val_segment_losses']):
+                wandb_log_dict[f"val/segment_loss_{i}"] = seg_loss
+
+            wandb.log(wandb_log_dict)
+
         if losses['val'] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses['val']
             if iter_num > 0:
@@ -312,7 +333,7 @@ while True:
             # looking at the source of that context manager, it just toggles this variable
             model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
         with ctx:
-            logits, loss, _ = model(X, Y)
+            logits, loss, segment_loss, _ = model(X, Y)
             loss = loss / gradient_accumulation_steps  # scale the loss to account for gradient accumulation
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
         X, Y = get_batch('train')
@@ -337,7 +358,7 @@ while True:
         # scale up to undo the division above, approximating the true total loss (exact would have been a sum)
         lossf = loss.item() * gradient_accumulation_steps
         if local_iter_num >= 5:  # let the training loop settle a bit
-            mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
+            mfu = raw_model.estimate_mfu(val_batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
         print(f"iter {iter_num}: loss {lossf:.4f}, time {dt * 1000:.2f}ms, mfu {running_mfu * 100:.2f}%")
     iter_num += 1

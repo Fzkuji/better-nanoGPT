@@ -36,7 +36,7 @@ class CausalSelfAttention(nn.Module):
         self.block_size = config.block_size
 
         # create the sliding window mask
-        max_input_size = (self.block_size - 1) * config.n_layer + 1
+        max_input_size = 32768
         # causal mask to ensure that attention is only applied to the left in the input sequence
         buffer = torch.tril(torch.ones(max_input_size, max_input_size))
         # apply sliding window to the mask
@@ -207,16 +207,29 @@ class GPT(nn.Module):
                 presents.append(present)
         x = self.transformer.ln_f(x)
 
+        # 计算 segment_loss
+        segment_loss = []
         if targets is not None:
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+
+            # 计算 segment_loss, 不确定什么长度, 每个 memory_block_size 长度计算一次 loss
+            for i in range(0, t, self.config.block_size):
+                segment_loss.append(
+                    F.cross_entropy(
+                        logits[:, i:i + self.config.block_size].view(-1, logits.size(-1)),
+                        targets[:, i:i + self.config.block_size].view(-1),
+                        ignore_index=-1
+                    )
+                )
+
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
             loss = None
 
-        return logits, loss, presents if targets is None else None
+        return logits, loss, segment_loss, presents if targets is None else None
 
     def crop_block_size(self, block_size):
         # model surgery to decrease the block size if necessary
