@@ -34,23 +34,9 @@ class CausalSelfAttention(nn.Module):
         self.n_embd = config.n_embd
         self.dropout = config.dropout
         self.block_size = config.block_size
-
-        # create the sliding window mask
-        max_input_size = 32768
-        # causal mask to ensure that attention is only applied to the left in the input sequence
-        buffer = torch.tril(torch.ones(max_input_size, max_input_size))
-        # apply sliding window to the mask
-        for i in range(max_input_size):
-            buffer[i, :max(0, i - self.block_size + 1)] = 0  # Set values outside the window to 0
-        self.register_buffer("bias", buffer.view(1, 1, max_input_size, max_input_size))
-
-        # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
-        if self.flash:
-            # 将bias转换为torch.bool类型
-            self.bias = self.bias.bool()
 
-    def forward(self, x, past_key_values=None, use_cache=False):
+    def forward(self, x, past_key_values=None, use_cache=False, bias=None):
         B, T, C = x.size()  # batch size, sequence length, embedding dimensionality (n_embd)
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
@@ -70,24 +56,10 @@ class CausalSelfAttention(nn.Module):
         else:
             present = None
 
-        if self.bias.size(2) != T:
-            # causal mask to ensure that attention is only applied to the left in the input sequence
-            buffer = torch.tril(torch.ones(T, T))
-            # apply sliding window to the mask
-            for i in range(T):
-                buffer[i, :max(0, i - self.block_size + 1)] = 0  # Set values outside the window to 0
-            self.register_buffer("bias", buffer.view(1, 1, T, T))
-
-            # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
-            self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
-            if self.flash:
-                # 将bias转换为torch.bool类型
-                self.bias = self.bias.bool()
-
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
             # efficient attention using Flash Attention CUDA kernels
-            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=self.bias[:, :, :T, :T],
+            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=bias[:, :, :T, :T],
                                                                  dropout_p=self.dropout if self.training else 0,
                                                                  is_causal=False)
         else:
@@ -130,8 +102,8 @@ class Block(nn.Module):
         self.ln_2 = RMSNorm(config.n_embd)
         self.mlp = MLP(config)
 
-    def forward(self, x, past_key_values=None, use_cache=False):
-        attn_output, present = self.attn(self.ln_1(x), past_key_values=past_key_values, use_cache=use_cache)
+    def forward(self, x, past_key_values=None, use_cache=False, bias=None):
+        attn_output, present = self.attn(self.ln_1(x), past_key_values=past_key_values, use_cache=use_cache, bias=bias)
         x = x + attn_output
         x = x + self.mlp(self.ln_2(x))
         return x, present
@@ -176,6 +148,21 @@ class GPT(nn.Module):
             if pn.endswith('c_proj.weight'):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer))
 
+        # create the sliding window mask
+        max_input_size = 32768
+        # causal mask to ensure that attention is only applied to the left in the input sequence
+        mask = torch.tril(torch.ones(max_input_size, max_input_size))
+        # apply sliding window to the mask
+        for i in range(max_input_size):
+            mask[i, :max(0, i - self.config.block_size + 1)] = 0  # Set values outside the window to 0
+        self.bias = mask.view(1, 1, max_input_size, max_input_size)
+
+        # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
+        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+        if self.flash:
+            # 将bias转换为torch.bool类型
+            self.bias = self.bias.bool()
+
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params() / 1e6,))
 
@@ -210,13 +197,38 @@ class GPT(nn.Module):
             UserWarning
         ) if t > (self.config.block_size - 1) * self.config.n_layer + 1 else None
 
-        # forward the GPT model itself
+        # --------------------------------------------------------------
+        # Update the bias tensor to match the current input sequence length.
+        # This includes creating a causal mask to ensure attention is only
+        # applied to prior tokens, and applying a sliding window to restrict
+        # the scope of attention within a defined block size.
+        # --------------------------------------------------------------
+        if self.bias.size(2) != t:
+            # causal mask to ensure that attention is only applied to the left in the input sequence
+            mask = torch.tril(torch.ones(t, t))
+            # apply sliding window to the mask
+            for i in range(t):
+                mask[i, :max(0, i - self.config.block_size + 1)] = 0  # Set values outside the window to 0
+            self.bias = mask.view(1, 1, t, t)
+            if self.flash:
+                # 将bias转换为torch.bool类型
+                self.bias = self.bias.bool()
+
+        self.bias = self.bias.to(idx.device)
+
+        # --------------------------------------------------------------
+        # Forward pass through the GPT model.
+        # 1. Embed the input tokens to obtain token embeddings of shape (b, t, n_embd).
+        # 2. Process the embeddings through each transformer block in sequence.
+        # 3. If caching is enabled (i.e., targets is None), store the key-value pairs
+        #    for each block in `presents` to accelerate future computations.
+        # --------------------------------------------------------------
         x = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
 
         presents = []
         for i, block in enumerate(self.transformer.h):
             past = past_key_values[i] if past_key_values is not None else None
-            x, present = block(x, past_key_values=past, use_cache=True if targets is None else False)
+            x, present = block(x, past_key_values=past, use_cache=True if targets is None else False, bias=self.bias)
             if targets is None:
                 presents.append(present)
         x = self.transformer.ln_f(x)
@@ -228,15 +240,18 @@ class GPT(nn.Module):
             logits = self.lm_head(x)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
 
-            # 计算 segment_loss, 不确定什么长度, 每个 memory_block_size 长度计算一次 loss
-            for i in range(0, t, self.config.block_size):
-                segment_loss.append(
-                    F.cross_entropy(
-                        logits[:, i:i + self.config.block_size].reshape(-1, logits.size(-1)),
-                        targets[:, i:i + self.config.block_size].reshape(-1),
-                        ignore_index=-1
+            # 判断模型是否是eval模式
+            if not self.training:
+
+                # 计算 segment_loss, 不确定什么长度, 每个 memory_block_size 长度计算一次 loss
+                for i in range(0, t, self.config.block_size):
+                    segment_loss.append(
+                        F.cross_entropy(
+                            logits[:, i:i + self.config.block_size].reshape(-1, logits.size(-1)),
+                            targets[:, i:i + self.config.block_size].reshape(-1),
+                            ignore_index=-1
+                        )
                     )
-                )
 
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
