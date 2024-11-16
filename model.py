@@ -70,6 +70,20 @@ class CausalSelfAttention(nn.Module):
         else:
             present = None
 
+        if self.bias.size(2) != T:
+            # causal mask to ensure that attention is only applied to the left in the input sequence
+            buffer = torch.tril(torch.ones(T, T))
+            # apply sliding window to the mask
+            for i in range(T):
+                buffer[i, :max(0, i - self.block_size + 1)] = 0  # Set values outside the window to 0
+            self.register_buffer("bias", buffer.view(1, 1, T, T))
+
+            # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
+            self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+            if self.flash:
+                # 将bias转换为torch.bool类型
+                self.bias = self.bias.bool()
+
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
             # efficient attention using Flash Attention CUDA kernels
