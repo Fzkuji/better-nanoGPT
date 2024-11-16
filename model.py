@@ -218,8 +218,8 @@ class GPT(nn.Module):
             for i in range(0, t, self.config.block_size):
                 segment_loss.append(
                     F.cross_entropy(
-                        logits[:, i:i + self.config.block_size].view(-1, logits.size(-1)),
-                        targets[:, i:i + self.config.block_size].view(-1),
+                        logits[:, i:i + self.config.block_size].reshape(-1, logits.size(-1)),
+                        targets[:, i:i + self.config.block_size].reshape(-1),
                         ignore_index=-1
                     )
                 )
