@@ -2,18 +2,18 @@
 # launch as the following (e.g. in a screen session) and wait ~5 days:
 # $ torchrun --standalone --nproc_per_node=8 train.py config/train_gpt2.py
 
-wandb_log = True
+wandb_log = False
 wandb_project = 'owt'
 wandb_run_name='gpt2-124M'
 
 # these make the total batch size be ~0.5M
 # 12 batch size * 1024 block size * 5 gradaccum * 8 GPUs = 491,520
-train_batch_size = 12
+train_batch_size = 3
 val_batch_size = 1
-block_size = 512
-train_size = 1024  # size of the input to the model
-val_size = 32768  # size of the input to the model
-gradient_accumulation_steps = 5 * 8
+block_size = 64
+train_size = 256  # size of the input to the model
+val_size = 2048  # size of the input to the model
+gradient_accumulation_steps = 8
 
 # model
 n_layer = 12

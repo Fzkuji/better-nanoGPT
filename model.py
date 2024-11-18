@@ -149,19 +149,20 @@ class GPT(nn.Module):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer))
 
         # create the sliding window mask
-        max_input_size = 32768
+        max_input_size = 8192
         # causal mask to ensure that attention is only applied to the left in the input sequence
-        mask = torch.tril(torch.ones(max_input_size, max_input_size))
+        mask = torch.tril(torch.ones(max_input_size, max_input_size, dtype=torch.int))
         # apply sliding window to the mask
         for i in range(max_input_size):
             mask[i, :max(0, i - self.config.block_size + 1)] = 0  # Set values outside the window to 0
-        self.bias = mask.view(1, 1, max_input_size, max_input_size)
 
         # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
         if self.flash:
             # 将bias转换为torch.bool类型
-            self.bias = self.bias.bool()
+            mask = mask.bool()
+
+        self.register_buffer("bias", mask.view(1, 1, max_input_size, max_input_size))
 
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params() / 1e6,))
@@ -197,24 +198,24 @@ class GPT(nn.Module):
             UserWarning
         ) if t > (self.config.block_size - 1) * self.config.n_layer + 1 else None
 
-        # --------------------------------------------------------------
-        # Update the bias tensor to match the current input sequence length.
-        # This includes creating a causal mask to ensure attention is only
-        # applied to prior tokens, and applying a sliding window to restrict
-        # the scope of attention within a defined block size.
-        # --------------------------------------------------------------
-        if self.bias.size(2) != t:
-            # causal mask to ensure that attention is only applied to the left in the input sequence
-            mask = torch.tril(torch.ones(t, t))
-            # apply sliding window to the mask
-            for i in range(t):
-                mask[i, :max(0, i - self.config.block_size + 1)] = 0  # Set values outside the window to 0
-            self.bias = mask.view(1, 1, t, t)
-            if self.flash:
-                # 将bias转换为torch.bool类型
-                self.bias = self.bias.bool()
-
-        self.bias = self.bias.to(idx.device)
+        # # --------------------------------------------------------------
+        # # Update the bias tensor to match the current input sequence length.
+        # # This includes creating a causal mask to ensure attention is only
+        # # applied to prior tokens, and applying a sliding window to restrict
+        # # the scope of attention within a defined block size.
+        # # --------------------------------------------------------------
+        # if self.bias.size(2) != t:
+        #     # causal mask to ensure that attention is only applied to the left in the input sequence
+        #     mask = torch.tril(torch.ones(t, t))
+        #     # apply sliding window to the mask
+        #     for i in range(t):
+        #         mask[i, :max(0, i - self.config.block_size + 1)] = 0  # Set values outside the window to 0
+        #     self.bias = mask.view(1, 1, t, t)
+        #     if self.flash:
+        #         # 将bias转换为torch.bool类型
+        #         self.bias = self.bias.bool()
+        #
+        # self.bias = self.bias.to(idx.device)
 
         # --------------------------------------------------------------
         # Forward pass through the GPT model.
@@ -228,7 +229,7 @@ class GPT(nn.Module):
         presents = []
         for i, block in enumerate(self.transformer.h):
             past = past_key_values[i] if past_key_values is not None else None
-            x, present = block(x, past_key_values=past, use_cache=True if targets is None else False, bias=self.bias)
+            x, present = block(x, past_key_values=past, use_cache=True if targets is None else False, bias=self.bias[:, :, :t, :t])
             if targets is None:
                 presents.append(present)
         x = self.transformer.ln_f(x)

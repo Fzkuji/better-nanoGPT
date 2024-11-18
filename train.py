@@ -120,7 +120,7 @@ ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=
 data_dir = os.path.join('data', dataset)
 
 
-def get_batch(split, batch_size=16, length=2048):
+def get_batch(split, batch_size, length):
     # We recreate np.memmap every batch to avoid a memory leak, as per
     # https://stackoverflow.com/questions/45132940/numpy-memmap-memory-usage-want-to-iterate-once/61472122#61472122
     if split == 'train':
@@ -233,9 +233,9 @@ def estimate_loss():
         # Add progress bar for eval_iters loop
         for k in tqdm(range(eval_iters), desc=f"Evaluating {split} set"):
             if split == 'train':
-                X, Y = get_batch(split, train_batch_size, train_size)
+                X, Y = get_batch(split, config['train_batch_size'], config['train_size'])
             elif split == 'val':
-                X, Y = get_batch(split, val_batch_size, val_size)
+                X, Y = get_batch(split, config['val_batch_size'], config['val_size'])
             else:
                 raise ValueError(f"invalid split: {split}")
 
@@ -273,7 +273,7 @@ if wandb_log and master_process:
     wandb.init(project=wandb_project, name=wandb_run_name, config=config)
 
 # training loop
-X, Y = get_batch('train')  # fetch the very first batch
+X, Y = get_batch('train', config['train_batch_size'], config['train_size'])  # fetch the very first batch
 t0 = time.time()
 local_iter_num = 0  # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model  # unwrap DDP container if needed
@@ -336,7 +336,7 @@ while True:
             logits, loss, segment_loss, _ = model(X, Y)
             loss = loss / gradient_accumulation_steps  # scale the loss to account for gradient accumulation
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
-        X, Y = get_batch('train')
+        X, Y = get_batch('train', config['train_batch_size'], config['train_size'])
         # backward pass, with gradient scaling if training in fp16
         scaler.scale(loss).backward()
     # clip the gradient
