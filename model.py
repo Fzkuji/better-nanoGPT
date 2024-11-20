@@ -148,19 +148,17 @@ class GPT(nn.Module):
             if pn.endswith('c_proj.weight'):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer))
 
+        # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
+        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+
         # create the sliding window mask
-        max_input_size = 8192
+        max_input_size = 32768
         # causal mask to ensure that attention is only applied to the left in the input sequence
-        mask = torch.tril(torch.ones(max_input_size, max_input_size, dtype=torch.int))
+        mask = torch.tril(torch.ones(max_input_size, max_input_size, dtype=torch.int8))
         # apply sliding window to the mask
         for i in range(max_input_size):
             mask[i, :max(0, i - self.config.block_size + 1)] = 0  # Set values outside the window to 0
-
-        # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
-        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
-        if self.flash:
-            # 将bias转换为torch.bool类型
-            mask = mask.bool()
+        mask = mask.bool() if self.flash else mask  # 将bias转换为torch.bool类型
 
         self.register_buffer("bias", mask.view(1, 1, max_input_size, max_input_size))
 
