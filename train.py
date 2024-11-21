@@ -18,6 +18,7 @@ $ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=1 --master_addr=123.456.123
 
 import os
 import time
+import datetime
 import math
 import pickle
 from tqdm import tqdm
@@ -86,7 +87,7 @@ config = {k: globals()[k] for k in config_keys}  # will be useful for logging
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get('RANK', -1)) != -1  # is this a ddp run?
 if ddp:
-    init_process_group(backend=backend)
+    init_process_group(backend=backend, timeout=datetime.timedelta(seconds=3600))
     ddp_rank = int(os.environ['RANK'])
     ddp_local_rank = int(os.environ['LOCAL_RANK'])
     ddp_world_size = int(os.environ['WORLD_SIZE'])
