@@ -232,24 +232,27 @@ class GPT(nn.Module):
                 presents.append(present)
         x = self.transformer.ln_f(x)
 
-        # 计算 segment_loss
+        # 初始化 segment_loss 列表
         segment_loss = []
+
         if targets is not None:
-            # if we are given some desired targets also calculate the loss
-            logits = self.lm_head(x)
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            # 计算逐点损失 (未聚合到总损失)
+            logits = self.lm_head(x)  # (batch_size, seq_len, vocab_size)
+            pointwise_loss = F.cross_entropy(
+                logits.view(-1, logits.size(-1)),  # 展平 logits 维度为 (batch_size * seq_len, vocab_size)
+                targets.view(-1),  # 展平 targets 维度为 (batch_size * seq_len,)
+                ignore_index=-1,
+                reduction='none'  # 不进行聚合，返回逐点损失
+            ).view(logits.size(0), logits.size(1))  # 恢复形状为 (batch_size, seq_len)
 
-            # 判断模型是否是eval模式
+            # 计算整体的平均损失
+            loss = pointwise_loss.mean()
+
+            # 如果是评估模式，计算分段损失
             if not self.training:
-
-                # 计算 segment_loss, 不确定什么长度, 每个 memory_block_size 长度计算一次 loss
-                for i in range(0, t, self.config.block_size):
+                for i in range(0, logits.size(1), self.config.block_size):  # 按 block_size 切分
                     segment_loss.append(
-                        F.cross_entropy(
-                            logits[:, i:i + self.config.block_size].reshape(-1, logits.size(-1)),
-                            targets[:, i:i + self.config.block_size].reshape(-1),
-                            ignore_index=-1
-                        )
+                        pointwise_loss[:, i:i + self.config.block_size].mean().item()  # 计算分段的平均损失
                     )
 
         else:
