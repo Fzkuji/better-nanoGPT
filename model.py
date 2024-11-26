@@ -14,8 +14,138 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from transformers.utils import logging
+
 from utils import RMSNorm
 import warnings
+
+from typing import List, Optional, Tuple, Union
+from transformers import Qwen2Config
+logger = logging.get_logger(__name__)
+from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+
+# Copied from transformers.models.llama.modeling_llama.LlamaRotaryEmbedding with Llama->Qwen2
+class Qwen2RotaryEmbedding(nn.Module):
+    def __init__(
+        self,
+        dim=None,
+        max_position_embeddings=2048,
+        base=10000,
+        device=None,
+        scaling_factor=1.0,
+        rope_type="default",
+        config: Optional[Qwen2Config] = None,
+    ):
+        super().__init__()
+        # TODO (joao): remove the `if` below, only used for BC
+        self.rope_kwargs = {}
+        if config is None:
+            logger.warning_once(
+                "`Qwen2RotaryEmbedding` can now be fully parameterized by passing the model config through the "
+                "`config` argument. All other arguments will be removed in v4.46"
+            )
+            self.rope_kwargs = {
+                "rope_type": rope_type,
+                "factor": scaling_factor,
+                "dim": dim,
+                "base": base,
+                "max_position_embeddings": max_position_embeddings,
+            }
+            self.rope_type = rope_type
+            self.max_seq_len_cached = max_position_embeddings
+            self.original_max_seq_len = max_position_embeddings
+        else:
+            # BC: "rope_type" was originally "type"
+            if config.rope_scaling is not None:
+                self.rope_type = config.rope_scaling.get("rope_type", config.rope_scaling.get("type"))
+            else:
+                self.rope_type = "default"
+            self.max_seq_len_cached = config.max_position_embeddings
+            self.original_max_seq_len = config.max_position_embeddings
+
+        self.config = config
+        self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
+
+        inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device, **self.rope_kwargs)
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        self.original_inv_freq = self.inv_freq
+
+    def _dynamic_frequency_update(self, position_ids, device):
+        """
+        dynamic RoPE layers should recompute `inv_freq` in the following situations:
+        1 - growing beyond the cached sequence length (allow scaling)
+        2 - the current sequence length is in the original scale (avoid losing precision with small sequences)
+        """
+        seq_len = torch.max(position_ids) + 1
+        if seq_len > self.max_seq_len_cached:  # growth
+            inv_freq, self.attention_scaling = self.rope_init_fn(
+                self.config, device, seq_len=seq_len, **self.rope_kwargs
+            )
+            self.register_buffer("inv_freq", inv_freq, persistent=False)  # TODO joao: may break with compilation
+            self.max_seq_len_cached = seq_len
+
+        if seq_len < self.original_max_seq_len and self.max_seq_len_cached > self.original_max_seq_len:  # reset
+            self.register_buffer("inv_freq", self.original_inv_freq, persistent=False)
+            self.max_seq_len_cached = self.original_max_seq_len
+
+    @torch.no_grad()
+    def forward(self, x, position_ids):
+        if "dynamic" in self.rope_type:
+            self._dynamic_frequency_update(position_ids, device=x.device)
+
+        # Core RoPE block
+        inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
+        position_ids_expanded = position_ids[:, None, :].float()
+        # Force float32 (see https://github.com/huggingface/transformers/pull/29285)
+        device_type = x.device.type
+        device_type = device_type if isinstance(device_type, str) and device_type != "mps" else "cpu"
+        with torch.autocast(device_type=device_type, enabled=False):
+            freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
+            emb = torch.cat((freqs, freqs), dim=-1)
+            cos = emb.cos()
+            sin = emb.sin()
+
+        # Advanced RoPE types (e.g. yarn) apply a post-processing scaling factor, equivalent to scaling attention
+        cos = cos * self.attention_scaling
+        sin = sin * self.attention_scaling
+
+        return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
+
+
+# Copied from transformers.models.llama.modeling_llama.rotate_half
+def rotate_half(x):
+    """Rotates half the hidden dims of the input."""
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
+    return torch.cat((-x2, x1), dim=-1)
+
+
+# Copied from transformers.models.llama.modeling_llama.apply_rotary_pos_emb
+def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
+    """Applies Rotary Position Embedding to the query and key tensors.
+
+    Args:
+        q (`torch.Tensor`): The query tensor.
+        k (`torch.Tensor`): The key tensor.
+        cos (`torch.Tensor`): The cosine part of the rotary embedding.
+        sin (`torch.Tensor`): The sine part of the rotary embedding.
+        position_ids (`torch.Tensor`, *optional*):
+            Deprecated and unused.
+        unsqueeze_dim (`int`, *optional*, defaults to 1):
+            The 'unsqueeze_dim' argument specifies the dimension along which to unsqueeze cos[position_ids] and
+            sin[position_ids] so that they can be properly broadcasted to the dimensions of q and k. For example, note
+            that cos[position_ids] and sin[position_ids] have the shape [batch_size, seq_len, head_dim]. Then, if q and
+            k have the shape [batch_size, heads, seq_len, head_dim], then setting unsqueeze_dim=1 makes
+            cos[position_ids] and sin[position_ids] broadcastable to the shapes of q and k. Similarly, if q and k have
+            the shape [batch_size, seq_len, heads, head_dim], then set unsqueeze_dim=2.
+    Returns:
+        `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
+    """
+    cos = cos.unsqueeze(unsqueeze_dim)
+    sin = sin.unsqueeze(unsqueeze_dim)
+    q_embed = (q * cos) + (rotate_half(q) * sin)
+    k_embed = (k * cos) + (rotate_half(k) * sin)
+    return q_embed, k_embed
 
 
 class CausalSelfAttention(nn.Module):
@@ -36,42 +166,63 @@ class CausalSelfAttention(nn.Module):
         self.block_size = config.block_size
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
 
-    def forward(self, x, past_key_values=None, use_cache=False, bias=None):
-        B, T, C = x.size()  # batch size, sequence length, embedding dimensionality (n_embd)
+        # 初始化 RoPE 位置编码
+        self.rotary_emb = Qwen2RotaryEmbedding(dim=self.head_dim, max_position_embeddings=config.max_position_embeddings)
 
-        # calculate query, key, values for all heads in batch and move head forward to be the batch dim
+
+    def forward(self, x, position_ids, past_key_values=None, use_cache=False, bias=None):
+        B, T, C = x.size()
+
+        # 计算查询、键、值
         q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
+        q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
+        k = k.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
+        v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
 
+        # 如果有 past_key_values，需要更新 position_ids
+        if past_key_values is not None:
+            # past_key_values 的长度
+            past_length = past_key_values[0].size(2)
+            # 拼接后的总长度
+            total_length = past_length + T
+            # 更新 position_ids
+            position_ids = torch.arange(self.global_position - total_length, self.global_position, dtype=torch.long, device=x.device)
+            position_ids = position_ids.unsqueeze(0).expand(B, -1)
+        else:
+            total_length = T
+
+        # 应用 RoPE 位置编码
+        cos, sin = self.rotary_emb(q, position_ids=position_ids)
+        q, k = apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1)
+
+        # 拼接 past_key_values
+        if use_cache and past_key_values is not None:
+            past_keys, past_values = past_key_values
+            k = torch.cat((past_keys, k), dim=2)
+            v = torch.cat((past_values, v), dim=2)
+
+        # 更新 present
         if use_cache:
-            # Concatenate previous keys and values if using cached results
-            if past_key_values is not None:
-                past_keys, past_values = past_key_values
-                k = torch.cat((past_keys, k), dim=2)
-                v = torch.cat((past_values, v), dim=2)
-            # Update cache with most recent block_size keys and values
             present = (k[:, :, -self.block_size:], v[:, :, -self.block_size:])
         else:
             present = None
 
-        # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
+        # 计算注意力
+        # 注意，这里的 bias 尺寸应为 [1, 1, total_length, total_length]
         if self.flash:
-            # efficient attention using Flash Attention CUDA kernels
-            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=bias[:, :, :T, :T],
-                                                                 dropout_p=self.dropout if self.training else 0,
-                                                                 is_causal=False)
+            y = torch.nn.functional.scaled_dot_product_attention(
+                q, k, v, attn_mask=bias,
+                dropout_p=self.dropout if self.training else 0,
+                is_causal=False
+            )
         else:
-            # manual implementation of attention
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-            att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
+            att = att.masked_fill(bias == 0, float('-inf'))
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
-            y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        y = y.transpose(1, 2).contiguous().view(B, T, C)  # re-assemble all head outputs side by side
+            y = att @ v
+        y = y.transpose(1, 2).contiguous().view(B, T, C)
 
-        # output projection
         y = self.resid_dropout(self.c_proj(y))
         return y, present
 
@@ -102,8 +253,14 @@ class Block(nn.Module):
         self.ln_2 = RMSNorm(config.n_embd)
         self.mlp = MLP(config)
 
-    def forward(self, x, past_key_values=None, use_cache=False, bias=None):
-        attn_output, present = self.attn(self.ln_1(x), past_key_values=past_key_values, use_cache=use_cache, bias=bias)
+    def forward(self, x, position_ids, past_key_values=None, use_cache=False, bias=None):
+        attn_output, present = self.attn(
+            self.ln_1(x),
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            use_cache=use_cache,
+            bias=bias,
+        )
         x = x + attn_output
         x = x + self.mlp(self.ln_2(x))
         return x, present
@@ -112,6 +269,7 @@ class Block(nn.Module):
 @dataclass
 class GPTConfig:
     block_size: int = 1024
+    max_position_embeddings: int = 32768
     vocab_size: int = 50304  # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
     n_layer: int = 12
     n_head: int = 12
@@ -152,18 +310,19 @@ class GPT(nn.Module):
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
 
         # create the sliding window mask
-        max_input_size = 32768
         # causal mask to ensure that attention is only applied to the left in the input sequence
-        mask = torch.tril(torch.ones(max_input_size, max_input_size, dtype=torch.int8))
+        mask = torch.tril(torch.ones(config.max_position_embeddings, config.max_position_embeddings, dtype=torch.int8))
         # apply sliding window to the mask
-        for i in range(max_input_size):
+        for i in range(config.max_position_embeddings):
             mask[i, :max(0, i - self.config.block_size + 1)] = 0  # Set values outside the window to 0
         mask = mask.bool() if self.flash else mask  # 将bias转换为torch.bool类型
 
-        self.register_buffer("bias", mask.view(1, 1, max_input_size, max_input_size))
+        self.register_buffer("bias", mask.view(1, 1, config.max_position_embeddings, config.max_position_embeddings))
 
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params() / 1e6,))
+
+        self.global_position = 0
 
     def get_num_params(self, non_embedding=True):
         """
@@ -215,6 +374,22 @@ class GPT(nn.Module):
         #
         # self.bias = self.bias.to(idx.device)
 
+        # 计算过去的长度
+        if past_key_values is not None and len(past_key_values) > 0:
+            past_length = past_key_values[0][0].size(2)
+        else:
+            past_length = 0
+
+        # 计算当前序列的 position_ids
+        position_ids = torch.arange(self.global_position, self.global_position + t, dtype=torch.long, device=idx.device)
+        position_ids = position_ids.unsqueeze(0).expand_as(idx)
+
+        # 更新全局位置
+        self.global_position += t
+
+        # 计算总的序列长度，包括 past_key_values
+        total_length = past_length + t
+
         # --------------------------------------------------------------
         # Forward pass through the GPT model.
         # 1. Embed the input tokens to obtain token embeddings of shape (b, t, n_embd).
@@ -227,7 +402,13 @@ class GPT(nn.Module):
         presents = []
         for i, block in enumerate(self.transformer.h):
             past = past_key_values[i] if past_key_values is not None else None
-            x, present = block(x, past_key_values=past, use_cache=True if targets is None else False, bias=self.bias[:, :, :t, :t])
+            x, present = block(
+                x,
+                position_ids=position_ids,
+                past_key_values=past,
+                use_cache=True if targets is None else False,
+                bias=self.bias[:, :, :total_length, :total_length]
+            )
             if targets is None:
                 presents.append(present)
         x = self.transformer.ln_f(x)
