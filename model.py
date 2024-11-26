@@ -161,6 +161,7 @@ class CausalSelfAttention(nn.Module):
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
         self.n_head = config.n_head
+        self.head_dim = config.n_embd // config.n_head
         self.n_embd = config.n_embd
         self.dropout = config.dropout
         self.block_size = config.block_size
@@ -355,24 +356,6 @@ class GPT(nn.Module):
             UserWarning
         ) if t > (self.config.block_size - 1) * self.config.n_layer + 1 else None
 
-        # # --------------------------------------------------------------
-        # # Update the bias tensor to match the current input sequence length.
-        # # This includes creating a causal mask to ensure attention is only
-        # # applied to prior tokens, and applying a sliding window to restrict
-        # # the scope of attention within a defined block size.
-        # # --------------------------------------------------------------
-        # if self.bias.size(2) != t:
-        #     # causal mask to ensure that attention is only applied to the left in the input sequence
-        #     mask = torch.tril(torch.ones(t, t))
-        #     # apply sliding window to the mask
-        #     for i in range(t):
-        #         mask[i, :max(0, i - self.config.block_size + 1)] = 0  # Set values outside the window to 0
-        #     self.bias = mask.view(1, 1, t, t)
-        #     if self.flash:
-        #         # 将bias转换为torch.bool类型
-        #         self.bias = self.bias.bool()
-        #
-        # self.bias = self.bias.to(idx.device)
 
         # 计算过去的长度
         if past_key_values is not None and len(past_key_values) > 0:
@@ -380,15 +363,16 @@ class GPT(nn.Module):
         else:
             past_length = 0
 
+        # 计算总的序列长度，包括 past_key_values
+        total_length = past_length + t
+        assert total_length <= self.config.max_position_embeddings, f"Cannot forward, total sequence length {total_length} exceeded max position embeddings {self.config.max_position_embeddings}"
+
         # 计算当前序列的 position_ids
         position_ids = torch.arange(self.global_position, self.global_position + t, dtype=torch.long, device=idx.device)
         position_ids = position_ids.unsqueeze(0).expand_as(idx)
 
         # 更新全局位置
         self.global_position += t
-
-        # 计算总的序列长度，包括 past_key_values
-        total_length = past_length + t
 
         # --------------------------------------------------------------
         # Forward pass through the GPT model.

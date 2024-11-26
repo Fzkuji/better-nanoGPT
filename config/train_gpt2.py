@@ -19,6 +19,7 @@ gradient_accumulation_steps = 5 * 4  # accumulate gradients over N * batch_size 
 n_layer = 12
 n_head = 12
 n_embd = 768
+max_position_embeddings = 32768
 
 # this makes total number of tokens be 300B
 max_iters = 10000
