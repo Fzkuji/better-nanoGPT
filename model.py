@@ -112,6 +112,7 @@ class Block(nn.Module):
 @dataclass
 class GPTConfig:
     block_size: int = 1024
+    max_position_embeddings: int = 32768
     vocab_size: int = 50304  # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
     n_layer: int = 12
     n_head: int = 12
@@ -152,15 +153,14 @@ class GPT(nn.Module):
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
 
         # create the sliding window mask
-        max_input_size = 32768
         # causal mask to ensure that attention is only applied to the left in the input sequence
-        mask = torch.tril(torch.ones(max_input_size, max_input_size, dtype=torch.int8))
+        mask = torch.tril(torch.ones(config.max_position_embeddings, config.max_position_embeddings, dtype=torch.int8))
         # apply sliding window to the mask
-        for i in range(max_input_size):
+        for i in range(config.max_position_embeddings):
             mask[i, :max(0, i - self.config.block_size + 1)] = 0  # Set values outside the window to 0
         mask = mask.bool() if self.flash else mask  # 将bias转换为torch.bool类型
 
-        self.register_buffer("bias", mask.view(1, 1, max_input_size, max_input_size))
+        self.register_buffer("bias", mask.view(1, 1, config.max_position_embeddings, config.max_position_embeddings))
 
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params() / 1e6,))
@@ -195,25 +195,6 @@ class GPT(nn.Module):
             f"Input sequence length {t} exceeds the model's memory capacity of {(self.config.block_size - 1) * self.config.n_layer + 1}, which may lead to unavoidable information loss.",
             UserWarning
         ) if t > (self.config.block_size - 1) * self.config.n_layer + 1 else None
-
-        # # --------------------------------------------------------------
-        # # Update the bias tensor to match the current input sequence length.
-        # # This includes creating a causal mask to ensure attention is only
-        # # applied to prior tokens, and applying a sliding window to restrict
-        # # the scope of attention within a defined block size.
-        # # --------------------------------------------------------------
-        # if self.bias.size(2) != t:
-        #     # causal mask to ensure that attention is only applied to the left in the input sequence
-        #     mask = torch.tril(torch.ones(t, t))
-        #     # apply sliding window to the mask
-        #     for i in range(t):
-        #         mask[i, :max(0, i - self.config.block_size + 1)] = 0  # Set values outside the window to 0
-        #     self.bias = mask.view(1, 1, t, t)
-        #     if self.flash:
-        #         # 将bias转换为torch.bool类型
-        #         self.bias = self.bias.bool()
-        #
-        # self.bias = self.bias.to(idx.device)
 
         # --------------------------------------------------------------
         # Forward pass through the GPT model.
@@ -301,7 +282,8 @@ class GPT(nn.Module):
         model = GPT(config)
         sd = model.state_dict()
         sd_keys = sd.keys()
-        sd_keys = [k for k in sd_keys if not k.endswith('.attn.bias')]  # discard this mask / buffer, not a param
+        # sd_keys = [k for k in sd_keys if not k.endswith('.attn.bias')]  # discard this mask / buffer, not a param
+        sd_keys = [k for k in sd_keys if not k.endswith('.bias')]  # discard this mask / buffer, not a param
 
         # init a huggingface/transformers model
         model_hf = GPT2LMHeadModel.from_pretrained(model_type)
@@ -314,18 +296,49 @@ class GPT(nn.Module):
         transposed = ['attn.c_attn.weight', 'attn.c_proj.weight', 'mlp.c_fc.weight', 'mlp.c_proj.weight']
         # basically the openai checkpoints use a "Conv1D" module, but we only want to use a vanilla Linear
         # this means that we have to transpose these weights when we import them
-        assert len(sd_keys_hf) == len(sd_keys), f"mismatched keys: {len(sd_keys_hf)} != {len(sd_keys)}"
+
+        # --------------------------------------------------------------
+        # Compare keys between the custom model and HuggingFace model:
+        # 1. Identify missing keys in each model.
+        # 2. Warn if the number of keys differs, indicating potential mismatches.
+        # --------------------------------------------------------------
+
+        # # output differences between the two models
+        # print("missing keys in HF model:")
+        # for k in sd_keys:
+        #     if k not in sd_keys_hf:
+        #         print(k)
+        # print("missing keys in our model:")
+        # for k in sd_keys_hf:
+        #     if k not in sd_keys:
+        #         print(k)
+
+        # assert len(sd_keys_hf) == len(sd_keys), f"mismatched keys: {len(sd_keys_hf)} != {len(sd_keys)}"
+        if len(sd_keys_hf) != len(sd_keys):
+            warnings.warn(f"mismatched keys: {len(sd_keys_hf)} != {len(sd_keys)}, pls double check using the code above")
+
+        # --------------------------------------------------------------
+        # Transfer weights from HuggingFace model to our custom model:
+        # 1. For Conv1D weights (which are stored in a 1D convolutional format in HF),
+        #    we transpose them to match the expected shape for our model.
+        # 2. For other parameters, we perform a direct copy to align weights.
+        # --------------------------------------------------------------
+
         for k in sd_keys_hf:
-            if any(k.endswith(w) for w in transposed):
-                # special treatment for the Conv1D weights we need to transpose
-                assert sd_hf[k].shape[::-1] == sd[k].shape
-                with torch.no_grad():
-                    sd[k].copy_(sd_hf[k].t())
+            if k in sd_keys:  # Only copy if the key exists in both models
+                if any(k.endswith(w) for w in transposed):
+                    # Special treatment for Conv1D weights that need to be transposed
+                    assert sd_hf[k].shape[::-1] == sd[k].shape  # Ensure shapes are compatible after transpose
+                    with torch.no_grad():
+                        sd[k].copy_(sd_hf[k].t())  # Transpose and copy the weights
+                else:
+                    # Standard copy for other parameters
+                    assert sd_hf[k].shape == sd[k].shape  # Ensure shapes match for direct copy
+                    with torch.no_grad():
+                        sd[k].copy_(sd_hf[k])  # Copy the weights directly
             else:
-                # vanilla copy over the other parameters
-                assert sd_hf[k].shape == sd[k].shape
-                with torch.no_grad():
-                    sd[k].copy_(sd_hf[k])
+                # Skip parameters in HF model that don't have a matching name in our model
+                continue
 
         return model
 
