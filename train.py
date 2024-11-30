@@ -58,6 +58,7 @@ val_size = 2048  # size of the input to the model
 n_layer = 12
 n_head = 12
 n_embd = 768
+position_embedding = 'rope'
 max_position_embeddings = 2048
 dropout = 0.0  # for pretraining 0 is good, for finetuning try 0.1+
 bias = False  # do we use bias inside LayerNorm and Linear layers?

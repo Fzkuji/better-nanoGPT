@@ -165,10 +165,12 @@ class CausalSelfAttention(nn.Module):
         self.n_embd = config.n_embd
         self.dropout = config.dropout
         self.block_size = config.block_size
+        self.position_embedding = config.position_embedding
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
 
-        # 初始化 RoPE 位置编码
-        self.rotary_emb = Qwen2RotaryEmbedding(dim=self.head_dim, max_position_embeddings=config.max_position_embeddings)
+        if self.position_embedding == 'rope':
+            # 初始化 RoPE 位置编码
+            self.rotary_emb = Qwen2RotaryEmbedding(dim=self.head_dim, max_position_embeddings=config.max_position_embeddings)
 
 
     def forward(self, x, position_ids, past_key_values=None, use_cache=False, bias=None):
@@ -192,9 +194,10 @@ class CausalSelfAttention(nn.Module):
         else:
             total_length = T
 
-        # 应用 RoPE 位置编码
-        cos, sin = self.rotary_emb(q, position_ids=position_ids)
-        q, k = apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1)
+        if self.position_embedding == 'rope':
+            # 应用 RoPE 位置编码
+            cos, sin = self.rotary_emb(q, position_ids=position_ids)
+            q, k = apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1)
 
         # 拼接 past_key_values
         if use_cache and past_key_values is not None:
@@ -272,6 +275,7 @@ class Block(nn.Module):
 @dataclass
 class GPTConfig:
     block_size: int = 1024
+    position_embedding: str = 'rope'  # rope or None
     max_position_embeddings: int = 32768
     vocab_size: int = 50304  # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
     n_layer: int = 12

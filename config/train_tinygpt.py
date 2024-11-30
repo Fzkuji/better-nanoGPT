@@ -15,10 +15,12 @@ wandb_run_name = 'mini-gpt'
 
 dataset = 'openwebtext'
 gradient_accumulation_steps = 1
-batch_size = 64
+train_batch_size = 12
 block_size = 256 # context of up to 256 previous characters
 train_size = 512
 val_size = 1024
+position_embedding = 'rope'
+max_position_embeddings = 2048
 
 # baby GPT model :)
 n_layer = 6
