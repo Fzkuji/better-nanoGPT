@@ -12,13 +12,13 @@ data = {
     "train": {
         "datasets": [
             {
-                "dataset": "openwebtext",
-            },
-        ],  # 'openwebtext' or 'shakespeare' or 'shakespeare_char' or 'pg19'
-        "batch_size": 12,               # if gradient_accumulation_steps > 1, this is the micro-batch size
-        "context_length": 1024          # size of the input to the model
+                "dataset": "openwebtext",   # 'openwebtext' or 'shakespeare' or 'shakespeare_char' or 'pg19'
+                "batch_size": 12,           # must fit in GPU memory
+                "context_length": 1024      # size of the input to the model
+            }
+        ]
     },
-    "eval": {
+    "val": {
         "datasets": [
             {
                 "dataset": "openwebtext",
@@ -40,7 +40,7 @@ block_size = 128
 n_layer = 24
 n_head = 12
 n_embd = 768
-position_embedding = 'none' # 'rope' or 'none'
+position_embedding = 'rope' # 'rope' or 'none'
 max_position_embeddings = 32768
 
 # this makes total number of tokens be 300B

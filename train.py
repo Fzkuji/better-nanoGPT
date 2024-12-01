@@ -53,23 +53,23 @@ data = {
     "train": {
         "datasets": [
             {
-                "dataset": "openwebtext",
-            },
-        ],  # 'openwebtext' or 'shakespeare' or 'shakespeare_char' or 'pg19'
-        "batch_size": 12,               # if gradient_accumulation_steps > 1, this is the micro-batch size
-        "context_length": 1024          # size of the input to the model
+                "dataset": "openwebtext",   # 'openwebtext' or 'shakespeare' or 'shakespeare_char' or 'pg19'
+                "batch_size": 12,           # must fit in GPU memory
+                "context_length": 1024      # size of the input to the model
+            }
+        ]
     },
-    "eval": {
+    "val": {
         "datasets": [
             {
                 "dataset": "openwebtext",
-                "batch_size": 12,       # must fit in GPU memory
-                "context_length": 2048  # size of the input to the model
+                "batch_size": 12,           # must fit in GPU memory
+                "context_length": 2048      # size of the input to the model
             },
             {
                 "dataset": "pg19",
-                "batch_size": 8,        # must fit in GPU memory
-                "context_length": 1024  # size of the input to the model
+                "batch_size": 8,            # must fit in GPU memory
+                "context_length": 1024      # size of the input to the model
             }
         ]
     }
@@ -128,7 +128,8 @@ else:
     master_process = True
     seed_offset = 0
     ddp_world_size = 1
-tokens_per_iter = gradient_accumulation_steps * ddp_world_size * data['train']['batch_size'] * data['train']['context_length']
+tokens_per_iter = (gradient_accumulation_steps * ddp_world_size *
+                   data['train']['datasets'][0]['batch_size'] * data['train']['datasets'][0]['context_length'])
 print(f"tokens per iteration will be: {tokens_per_iter:,}")
 
 if master_process:
@@ -170,7 +171,7 @@ iter_num = 0
 best_val_loss = 1e9
 
 # attempt to derive vocab_size from the dataset
-train_dataset = data['train']['dataset']
+train_dataset = data['train']['datasets'][0]['dataset']
 meta_path = os.path.join('data', train_dataset, 'meta.pkl')
 meta_vocab_size = None
 if os.path.exists(meta_path):
@@ -257,10 +258,10 @@ def estimate_loss():
 
     def eval(dataset, split, batch_size, context_length):
         losses = torch.zeros(eval_iters)
-        for k in range(eval_iters):
+        for k in tqdm(range(eval_iters), desc="Evaluating", unit="iteration"):  # use tqdm for progress bar
             X, Y = get_batch(dataset, split, batch_size, context_length)
             with ctx:
-                logits, loss = model(X, Y)
+                logits, loss, _, _ = model(X, Y)
             losses[k] = loss.item()
         return losses.mean()
 
@@ -268,6 +269,7 @@ def estimate_loss():
         for dataset in data[split]['datasets']:
             losses = eval(dataset['dataset'], split, dataset['batch_size'], dataset['context_length'])
             out[f'{split}_{dataset["dataset"]}'] = losses.item()
+            print(f"estimated {split} loss for {dataset['dataset']} = {losses.item():.4f}")
 
     model.train()
     return out
@@ -295,7 +297,12 @@ if wandb_log and master_process:
     wandb.init(project=wandb_project, name=wandb_run_name, config=config)
 
 # training loop
-X, Y = get_batch('train', config['train_batch_size'], config['train_size'])  # fetch the very first batch
+X, Y = get_batch(
+    data['train']['datasets'][0]['dataset'],
+    'train',
+    data['train']['datasets'][0]['batch_size'],
+    data['train']['datasets'][0]['context_length']
+)  # fetch the very first batch
 t0 = time.time()
 local_iter_num = 0  # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model  # unwrap DDP container if needed
@@ -356,7 +363,12 @@ while True:
             logits, loss, segment_loss, _ = model(X, Y)
             loss = loss / gradient_accumulation_steps  # scale the loss to account for gradient accumulation
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
-        X, Y = get_batch('train', config['train_batch_size'], config['train_size'])
+        X, Y = get_batch(
+            data['train']['datasets'][0]['dataset'],
+            'train',
+            data['train']['datasets'][0]['batch_size'],
+            data['train']['datasets'][0]['context_length']
+        )
         # backward pass, with gradient scaling if training in fp16
         scaler.scale(loss).backward()
     # clip the gradient
@@ -378,7 +390,7 @@ while True:
         # scale up to undo the division above, approximating the true total loss (exact would have been a sum)
         lossf = loss.item() * gradient_accumulation_steps
         if local_iter_num >= 5:  # let the training loop settle a bit
-            mfu = raw_model.estimate_mfu(data['train']['batch_size'] * gradient_accumulation_steps, dt)
+            mfu = raw_model.estimate_mfu(data['train']['datasets'][0]['batch_size'] * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
         print(f"iter {iter_num}: loss {lossf:.4f}, time {dt * 1000:.2f}ms, mfu {running_mfu * 100:.2f}%")
     iter_num += 1
