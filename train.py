@@ -317,12 +317,15 @@ while True:
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
         losses = estimate_loss()
+        train_loss_name = f'train/{data["train"]["datasets"][0]["dataset"]}'
+        val_loss_name = f'val/{data["train"]["datasets"][0]["dataset"]}'
+
         if wandb_log:
             # Log the segment losses along with other metrics
             wandb_log_dict = {
                 "iter": iter_num,
-                "train/loss": losses['train'],
-                "val/loss": losses['val'],
+                "train/loss": losses[train_loss_name],
+                "val/loss": losses[val_loss_name],
                 "lr": lr,
                 "mfu": running_mfu * 100,  # convert to percentage
             }
@@ -333,7 +336,7 @@ while True:
 
             wandb.log(wandb_log_dict)
 
-        val_loss_name = f'val/{data["train"]["datasets"][0]["dataset"]}'
+
         if losses[val_loss_name] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses[val_loss_name]
             if iter_num > 0:
