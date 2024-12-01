@@ -21,6 +21,8 @@ import time
 import datetime
 import math
 import pickle
+
+from torch.distributed.autograd import context
 from tqdm import tqdm
 from contextlib import nullcontext
 
@@ -47,14 +49,34 @@ wandb_log = False  # disabled by default
 wandb_project = 'owt'
 wandb_run_name = 'gpt2'  # 'run' + str(time.time())
 # data
-dataset = 'openwebtext'  # 'openwebtext' or 'shakespeare' or 'shakespeare_char'
+data = {
+    "train": {
+        "datasets": [
+            {
+                "dataset": "openwebtext",
+            },
+        ],  # 'openwebtext' or 'shakespeare' or 'shakespeare_char' or 'pg19'
+        "batch_size": 12,               # if gradient_accumulation_steps > 1, this is the micro-batch size
+        "context_length": 1024          # size of the input to the model
+    },
+    "eval": {
+        "datasets": [
+            {
+                "dataset": "pg19",
+                "batch_size": 12,       # must fit in GPU memory
+                "context_length": 2048  # size of the input to the model
+            },
+            {
+                "dataset": "shakespeare",
+                "batch_size": 8,        # must fit in GPU memory
+                "context_length": 1024  # size of the input to the model
+            }
+        ]
+    }
+}
 gradient_accumulation_steps = 5 * 8  # used to simulate larger batch sizes
-train_batch_size = 12  # if gradient_accumulation_steps > 1, this is the micro-batch size
-val_batch_size = 12  # must fit in GPU memory
-block_size = 1024
-train_size = 1024  # size of the input to the model
-val_size = 2048  # size of the input to the model
 # model
+block_size = 1024
 n_layer = 12
 n_head = 12
 n_embd = 768
@@ -75,7 +97,7 @@ warmup_iters = 2000  # how many steps to warm up for
 lr_decay_iters = 600000  # should be ~= max_iters per Chinchilla
 min_lr = 6e-5  # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
 # DDP settings
-backend = 'gloo'  # 'nccl', 'gloo', etc.
+backend = 'nccl'  # 'nccl', 'gloo', etc.
 # system
 device = 'cuda'  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
 dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16'  # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
@@ -106,7 +128,7 @@ else:
     master_process = True
     seed_offset = 0
     ddp_world_size = 1
-tokens_per_iter = gradient_accumulation_steps * ddp_world_size * train_batch_size * block_size
+tokens_per_iter = gradient_accumulation_steps * ddp_world_size * data['train']['batch_size'] * data['train']['context_length']
 print(f"tokens per iteration will be: {tokens_per_iter:,}")
 
 if master_process:
@@ -119,11 +141,11 @@ device_type = 'cuda' if 'cuda' in device else 'cpu'  # for later use in torch.au
 ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[dtype]
 ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 
-# poor man's data loader
-data_dir = os.path.join('data', dataset)
 
+def get_batch(dataset, split, batch_size, length):
+    # poor man's data loader
+    data_dir = os.path.join('data', dataset)
 
-def get_batch(split, batch_size, length):
     # We recreate np.memmap every batch to avoid a memory leak, as per
     # https://stackoverflow.com/questions/45132940/numpy-memmap-memory-usage-want-to-iterate-once/61472122#61472122
     if split == 'train':
@@ -148,7 +170,8 @@ iter_num = 0
 best_val_loss = 1e9
 
 # attempt to derive vocab_size from the dataset
-meta_path = os.path.join(data_dir, 'meta.pkl')
+train_dataset = data['train']['dataset']
+meta_path = os.path.join('data', train_dataset, 'meta.pkl')
 meta_vocab_size = None
 if os.path.exists(meta_path):
     with open(meta_path, 'rb') as f:
@@ -231,25 +254,20 @@ if ddp:
 def estimate_loss():
     out = {}
     model.eval()
-    for split in ['train', 'val']:
+
+    def eval(dataset, split, batch_size, context_length):
         losses = torch.zeros(eval_iters)
-        segment_losses = []
-        # Add progress bar for eval_iters loop
-        for k in tqdm(range(eval_iters), desc=f"Evaluating {split} set"):
-            if split == 'train':
-                X, Y = get_batch(split, config['train_batch_size'], config['train_size'])
-            elif split == 'val':
-                X, Y = get_batch(split, config['val_batch_size'], config['val_size'])
-            else:
-                raise ValueError(f"invalid split: {split}")
-
+        for k in range(eval_iters):
+            X, Y = get_batch(dataset, split, batch_size, context_length)
             with ctx:
-                logits, loss, segment_loss, _ = model(X, Y)
+                logits, loss = model(X, Y)
             losses[k] = loss.item()
-            segment_losses.append(segment_loss)
+        return losses.mean()
 
-        out[split] = losses.mean()
-        out[f'{split}_segment_losses'] = [sum(x) / len(x) for x in zip(*segment_losses)]
+    for split in ['train', 'val']:
+        for dataset in data[split]['datasets']:
+            losses = eval(dataset['dataset'], split, dataset['batch_size'], dataset['context_length'])
+            out[f'{split}_{dataset["dataset"]}'] = losses.item()
 
     model.train()
     return out
@@ -304,10 +322,8 @@ while True:
             }
 
             # Add segment losses for train and val
-            for i, seg_loss in enumerate(losses['train_segment_losses']):
-                wandb_log_dict[f"train/segment_loss_{i}"] = seg_loss
-            for i, seg_loss in enumerate(losses['val_segment_losses']):
-                wandb_log_dict[f"val/segment_loss_{i}"] = seg_loss
+            for key in losses.keys():
+                wandb_log_dict[f"{key}_loss"] = losses[key]
 
             wandb.log(wandb_log_dict)
 
@@ -362,7 +378,7 @@ while True:
         # scale up to undo the division above, approximating the true total loss (exact would have been a sum)
         lossf = loss.item() * gradient_accumulation_steps
         if local_iter_num >= 5:  # let the training loop settle a bit
-            mfu = raw_model.estimate_mfu(val_batch_size * gradient_accumulation_steps, dt)
+            mfu = raw_model.estimate_mfu(data['train']['batch_size'] * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
         print(f"iter {iter_num}: loss {lossf:.4f}, time {dt * 1000:.2f}ms, mfu {running_mfu * 100:.2f}%")
     iter_num += 1

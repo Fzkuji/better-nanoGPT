@@ -1,8 +1,6 @@
 # evaluate the base gpt2
 # n_layer=12, n_head=12, n_embd=768
 # 124M parameters
-from config.train_shakespeare_char import train_size
-from train import train_batch_size
 
 train_batch_size = 12
 val_batch_size = 12
