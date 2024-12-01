@@ -4,19 +4,40 @@
 
 wandb_log = False
 wandb_project = 'better-nanoGPT'
-wandb_run_name='999 W128-T1024-V32768-L12'
+wandb_run_name='999 W128-T1024-V32768-L24'
 
 # these make the total batch size be ~0.5M
-# 12 batch size * 1024 block size * 5 gradaccum * 4 GPUs = 245,760
-train_batch_size = 12
-val_batch_size = 1
-block_size = 128
-train_size = 1024  # size of the input to the model
-val_size = 32768  # size of the input to the model
+# 12 batch_size * 1024 context_length * 5 gradaccum * 4 GPUs = 245,760
+data = {
+    "train": {
+        "datasets": [
+            {
+                "dataset": "openwebtext",
+            },
+        ],  # 'openwebtext' or 'shakespeare' or 'shakespeare_char' or 'pg19'
+        "batch_size": 12,               # if gradient_accumulation_steps > 1, this is the micro-batch size
+        "context_length": 1024          # size of the input to the model
+    },
+    "eval": {
+        "datasets": [
+            {
+                "dataset": "openwebtext",
+                "batch_size": 1,       # must fit in GPU memory
+                "context_length": 32768  # size of the input to the model
+            },
+            {
+                "dataset": "pg19",
+                "batch_size": 1,        # must fit in GPU memory
+                "context_length": 32768  # size of the input to the model
+            }
+        ]
+    }
+}
 gradient_accumulation_steps = 5 * 4  # accumulate gradients over N * batch_size samples
 
 # model
-n_layer = 12
+block_size = 128
+n_layer = 24
 n_head = 12
 n_embd = 768
 position_embedding = 'none' # 'rope' or 'none'

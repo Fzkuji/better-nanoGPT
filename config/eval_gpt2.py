@@ -2,12 +2,35 @@
 # n_layer=12, n_head=12, n_embd=768
 # 124M parameters
 
-train_batch_size = 12
-val_batch_size = 12
-train_size = 512
-val_size = 1024
-eval_interval = 50
-eval_iters = 100 # use more iterations to get good estimate
+data = {
+    "train": {
+        "datasets": [
+            {
+                "dataset": "openwebtext",
+            },
+        ],  # 'openwebtext' or 'shakespeare' or 'shakespeare_char' or 'pg19'
+        "batch_size": 12,               # if gradient_accumulation_steps > 1, this is the micro-batch size
+        "context_length": 1024          # size of the input to the model
+    },
+    "eval": {
+        "datasets": [
+            {
+                "dataset": "openwebtext",
+                "batch_size": 1,       # must fit in GPU memory
+                "context_length": 32768  # size of the input to the model
+            },
+            {
+                "dataset": "pg19",
+                "batch_size": 1,        # must fit in GPU memory
+                "context_length": 32768  # size of the input to the model
+            }
+        ]
+    }
+}
+
+# eval stuff
+eval_interval = 1000
+eval_iters = 200 # use more iterations to get good estimate
 eval_only = True
 wandb_log = False
 init_from = 'resume'

@@ -62,12 +62,12 @@ data = {
     "eval": {
         "datasets": [
             {
-                "dataset": "pg19",
+                "dataset": "openwebtext",
                 "batch_size": 12,       # must fit in GPU memory
                 "context_length": 2048  # size of the input to the model
             },
             {
-                "dataset": "shakespeare",
+                "dataset": "pg19",
                 "batch_size": 8,        # must fit in GPU memory
                 "context_length": 1024  # size of the input to the model
             }
