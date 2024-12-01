@@ -268,7 +268,7 @@ def estimate_loss():
     for split in ['train', 'val']:
         for dataset in data[split]['datasets']:
             losses = eval(dataset['dataset'], split, dataset['batch_size'], dataset['context_length'])
-            out[f'{split}_{dataset["dataset"]}'] = losses.item()
+            out[f'{split}/{dataset["dataset"]}'] = losses.item()
             print(f"estimated {split} loss for {dataset['dataset']} = {losses.item():.4f}")
 
     model.train()
@@ -317,7 +317,6 @@ while True:
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
         losses = estimate_loss()
-        print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
         if wandb_log:
             # Log the segment losses along with other metrics
             wandb_log_dict = {
@@ -330,12 +329,13 @@ while True:
 
             # Add segment losses for train and val
             for key in losses.keys():
-                wandb_log_dict[f"{key}_loss"] = losses[key]
+                wandb_log_dict[f"{key}/loss"] = losses[key]
 
             wandb.log(wandb_log_dict)
 
-        if losses['val'] < best_val_loss or always_save_checkpoint:
-            best_val_loss = losses['val']
+        val_loss_name = f'val/{data["train"]["datasets"][0]["dataset"]}'
+        if losses[val_loss_name] < best_val_loss or always_save_checkpoint:
+            best_val_loss = losses[val_loss_name]
             if iter_num > 0:
                 checkpoint = {
                     'model': raw_model.state_dict(),
