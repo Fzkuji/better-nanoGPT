@@ -170,8 +170,8 @@ class CausalSelfAttention(nn.Module):
 
         if self.position_embedding == 'rope':
             # 初始化 RoPE 位置编码
+            # print("Using RoPE")
             self.rotary_emb = Qwen2RotaryEmbedding(dim=self.head_dim, max_position_embeddings=config.max_position_embeddings)
-
 
     def forward(self, x, position_ids, past_key_values=None, use_cache=False, bias=None):
         B, T, C = x.size()
@@ -418,13 +418,6 @@ class GPT(nn.Module):
 
             # 计算整体的平均损失
             loss = pointwise_loss.mean()
-
-            # 如果是评估模式，计算分段损失
-            if not self.training:
-                for i in range(0, logits.size(1), self.config.block_size):  # 按 block_size 切分
-                    segment_loss.append(
-                        pointwise_loss[:, i:i + self.config.block_size].mean().item()  # 计算分段的平均损失
-                    )
 
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position

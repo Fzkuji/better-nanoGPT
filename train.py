@@ -182,7 +182,8 @@ if os.path.exists(meta_path):
 
 # model init
 model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,
-                  bias=bias, vocab_size=None, dropout=dropout, max_position_embeddings=max_position_embeddings)  # start with model_args from command line
+                  bias=bias, vocab_size=None, dropout=dropout,
+                  position_embedding=position_embedding, max_position_embeddings=max_position_embeddings)  # start with model_args from command line
 if init_from == 'scratch':
     # init a new model from scratch
     print("Initializing a new model from scratch")
