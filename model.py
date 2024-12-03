@@ -170,10 +170,18 @@ class CausalSelfAttention(nn.Module):
 
         if self.position_embedding == 'rope':
             # 初始化 RoPE 位置编码
-            # print("Using RoPE")
             self.rotary_emb = Qwen2RotaryEmbedding(dim=self.head_dim, max_position_embeddings=config.max_position_embeddings)
+        elif self.position_embedding == 'alibi' or 'none':
+            pass
 
-    def forward(self, x, position_ids, past_key_values=None, use_cache=False, bias=None):
+    def forward(
+        self,
+        x,
+        position_ids,
+        past_key_values=None,
+        use_cache=False,
+        bias=None
+    ):
         B, T, C = x.size()
 
         # 计算查询、键、值
@@ -198,6 +206,8 @@ class CausalSelfAttention(nn.Module):
             # 应用 RoPE 位置编码
             cos, sin = self.rotary_emb(q, position_ids=position_ids)
             q, k = apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1)
+        else:
+            pass
 
         # 拼接 past_key_values
         if use_cache and past_key_values is not None:
@@ -222,7 +232,12 @@ class CausalSelfAttention(nn.Module):
         else:
             # manual implementation of attention
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-            att = att.masked_fill(bias == 0, float('-inf'))
+            if self.position_embedding == 'alibi':
+                att = att - bias
+            elif self.position_embedding == 'none':
+                att = att.masked_fill(bias == 0, float('-inf'))
+            else:
+                pass
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
             y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
@@ -319,10 +334,32 @@ class GPT(nn.Module):
         # create the sliding window mask
         # causal mask to ensure that attention is only applied to the left in the input sequence
         mask = torch.tril(torch.ones(config.max_position_embeddings, config.max_position_embeddings, dtype=torch.int8))
-        # apply sliding window to the mask
-        for i in range(config.max_position_embeddings):
-            mask[i, :max(0, i - self.config.block_size + 1)] = 0  # Set values outside the window to 0
-        mask = mask.bool() if self.flash else mask  # 将bias转换为torch.bool类型
+
+        if self.config.position_embedding == 'none' or 'rope':
+            # apply sliding window to the mask
+            for i in range(config.max_position_embeddings):
+                mask[i, :max(0, i - self.config.block_size + 1)] = 0  # Set values outside the window to 0
+            mask = mask.bool() if self.flash else mask  # 将bias转换为torch.bool类型
+        elif self.config.position_embedding == 'alibi':
+            slope = 0.05  # 固定的斜率
+
+            # 滑动窗口限制：窗口外设为 `inf`
+            for i in range(config.max_position_embeddings):
+                mask[i, :max(0, i - self.config.block_size + 1)] = float('inf')
+
+            # 0 替换为 `inf`
+            mask = mask.masked_fill(mask == 0, float('inf'))
+
+            # 生成固定的 ALiBi 偏置（窗口大小为 block_size）
+            relative_position_ids = torch.arange(self.config.block_size, dtype=torch.float32).unsqueeze(0)  # (1, block_size)
+            fixed_alibi = slope * relative_position_ids  # (1, block_size)
+
+            # 将窗口内的值倒序替换为 ALiBi 偏置
+            for i in range(config.max_position_embeddings):
+                start_idx = max(0, i - self.config.block_size + 1)
+                end_idx = i + 1
+                current_window_size = end_idx - start_idx  # 当前窗口大小
+                mask[i, start_idx:end_idx] = fixed_alibi[0, -current_window_size:].flip(0)  # 倒序分配偏置
 
         self.register_buffer("bias", mask.view(1, 1, config.max_position_embeddings, config.max_position_embeddings))
 

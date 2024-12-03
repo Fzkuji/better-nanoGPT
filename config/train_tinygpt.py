@@ -35,7 +35,7 @@ block_size = 32
 n_layer = 6
 n_head = 6
 n_embd = 384
-position_embedding = 'rope' # 'rope' or 'none'
+position_embedding = 'rope' # 'rope' or 'none' or 'alibi'
 max_position_embeddings = 1024
 
 # this makes total number of tokens be 300B
