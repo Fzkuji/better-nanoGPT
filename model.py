@@ -188,7 +188,7 @@ class CausalSelfAttention(nn.Module):
             # 初始化 RoPE 位置编码
             self.rotary_emb = Qwen2RotaryEmbedding(dim=self.head_dim, max_position_embeddings=config.max_position_embeddings)
         elif self.position_embedding == 'alibi':
-            self.register_buffer("m", get_alibi_slope(self.num_heads))
+            self.register_buffer("m", get_alibi_slope(self.n_head))
         else:
             pass
 
@@ -225,7 +225,7 @@ class CausalSelfAttention(nn.Module):
             cos, sin = self.rotary_emb(q, position_ids=position_ids)
             q, k = apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1)
         elif self.position_embedding == 'alibi':
-            position = (self.m * get_relative_positions(total_length)).unsqueeze(0)
+            position = (self.m * get_relative_positions(total_length).to(self.m.device)).unsqueeze(0)
 
         # 拼接 past_key_values
         if use_cache and past_key_values is not None:
