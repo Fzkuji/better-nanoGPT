@@ -190,7 +190,7 @@ class CausalSelfAttention(nn.Module):
         elif self.position_embedding == 'alibi':
             self.register_buffer("m", get_alibi_slope(self.n_head))
             position_embedding_width = 4 * config.block_size
-            self.position = torch.tril((self.m * get_relative_positions(position_embedding_width).to(self.m.device)).unsqueeze(0))
+            self.position = torch.tril((self.m * get_relative_positions(position_embedding_width)).unsqueeze(0))
             for i in range(position_embedding_width):
                 self.position[:, :, i, :max(0, i - config.block_size + 1)] = 0
         else:
@@ -270,7 +270,7 @@ class CausalSelfAttention(nn.Module):
                             :min(2 * position_width, total_length - i * position_width)
                             ]
                 else:
-                    att = att + self.position[:, :total_length, :total_length]
+                    att = att + self.position[:, :, :total_length, :total_length].to(x.device)
 
             att = att.masked_fill(bias == 0, float('-inf'))
             att = F.softmax(att, dim=-1)

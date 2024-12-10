@@ -4,7 +4,7 @@
 
 wandb_log = False
 wandb_project = 'better-nanoGPT'
-wandb_run_name='999 W128-T1024-V32768-L24'
+wandb_run_name='999 W128-T1024-V16384-L24'
 
 # these make the total batch size be ~0.5M
 # 12 batch_size * 1024 context_length * 5 gradaccum * 4 GPUs = 245,760
@@ -23,12 +23,12 @@ data = {
             {
                 "dataset": "openwebtext",
                 "batch_size": 1,       # must fit in GPU memory
-                "context_length": 32768  # size of the input to the model
+                "context_length": 16384  # size of the input to the model
             },
             {
                 "dataset": "pg19",
                 "batch_size": 1,        # must fit in GPU memory
-                "context_length": 32768  # size of the input to the model
+                "context_length": 16384  # size of the input to the model
             }
         ]
     }
@@ -40,7 +40,7 @@ block_size = 128
 n_layer = 24
 n_head = 12
 n_embd = 768
-position_embedding = 'rope' # 'rope' or 'none'
+position_embedding = 'alibi' # 'rope' or 'none'
 max_position_embeddings = 32768
 
 # this makes total number of tokens be 300B
