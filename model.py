@@ -226,8 +226,8 @@ class CausalSelfAttention(nn.Module):
             cos, sin = self.rotary_emb(q, position_ids=position_ids)
             q, k = apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1)
         elif self.position_embedding == 'alibi':
-            if self.input_length != total_length:
-                position = (self.m * get_relative_positions(total_length).to(x.device)).unsqueeze(0)
+            if (self.input_length != total_length) or (self.position is None):
+                self.position = (self.m * get_relative_positions(total_length).to(x.device)).unsqueeze(0)
             self.input_length = total_length
 
         # 拼接 past_key_values
@@ -255,7 +255,7 @@ class CausalSelfAttention(nn.Module):
             # manual implementation of attention
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
             if self.position_embedding == 'alibi':
-                att = att + position
+                att = att + self.position
             att = att.masked_fill(bias == 0, float('-inf'))
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
