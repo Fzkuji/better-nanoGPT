@@ -189,10 +189,7 @@ class CausalSelfAttention(nn.Module):
             self.rotary_emb = Qwen2RotaryEmbedding(dim=self.head_dim, max_position_embeddings=config.max_position_embeddings)
         elif self.position_embedding == 'alibi':
             self.register_buffer("m", get_alibi_slope(self.n_head))
-            position_embedding_width = 4 * config.block_size
-            self.position = torch.tril((self.m * get_relative_positions(position_embedding_width)).unsqueeze(0))
-            for i in range(position_embedding_width):
-                self.position[:, :, i, :max(0, i - config.block_size + 1)] = 0
+            self.position = (self.m * get_relative_positions(config.max_position_embeddings)).unsqueeze(0)
         else:
             pass
 
@@ -253,25 +250,7 @@ class CausalSelfAttention(nn.Module):
             # manual implementation of attention
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
             if self.position_embedding == 'alibi':
-                if total_length > self.position.size(2):
-                    assert self.position.size(2) % 2 == 0, "position size must be even."
-                    position_width = int(self.position.size(2)/2)
-                    loop = int(total_length / position_width)
-                    for i in range(loop):
-                        att[
-                        :,
-                        :,
-                        i * position_width : min((i + 1) * position_width, total_length),
-                        i * position_width : min((i + 2) * position_width, total_length)
-                        ] = self.position[
-                            :,
-                            :,
-                            :min(position_width, total_length - i * position_width),
-                            :min(2 * position_width, total_length - i * position_width)
-                            ]
-                else:
-                    att = att + self.position[:, :, :total_length, :total_length].to(x.device)
-
+                att = att + self.position[:, :, :total_length, :total_length].to(self.m.device)
             att = att.masked_fill(bias == 0, float('-inf'))
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
