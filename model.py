@@ -189,7 +189,7 @@ class CausalSelfAttention(nn.Module):
             self.rotary_emb = Qwen2RotaryEmbedding(dim=self.head_dim, max_position_embeddings=config.max_position_embeddings)
         elif self.position_embedding == 'alibi':
             self.register_buffer("m", get_alibi_slope(self.n_head))
-            self.position = (self.m * get_relative_positions(config.max_position_embeddings)).unsqueeze(0)
+            self.input_length = 0
         else:
             pass
 
@@ -225,6 +225,10 @@ class CausalSelfAttention(nn.Module):
             # 应用 RoPE 位置编码
             cos, sin = self.rotary_emb(q, position_ids=position_ids)
             q, k = apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1)
+        elif self.position_embedding == 'alibi':
+            if self.input_length != total_length:
+                position = (self.m * get_relative_positions(total_length).to(x.device)).unsqueeze(0)
+            self.input_length = total_length
 
         # 拼接 past_key_values
         if use_cache and past_key_values is not None:
@@ -241,6 +245,7 @@ class CausalSelfAttention(nn.Module):
         # 计算注意力
         # 注意，这里的 bias 尺寸应为 [1, 1, total_length, total_length]
         if self.flash and (self.position_embedding != 'alibi'):
+            print("using flash attention")
             y = torch.nn.functional.scaled_dot_product_attention(
                 q, k, v, attn_mask=bias,
                 dropout_p=self.dropout if self.training else 0,
@@ -250,7 +255,7 @@ class CausalSelfAttention(nn.Module):
             # manual implementation of attention
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
             if self.position_embedding == 'alibi':
-                att = att + self.position[:, :, :total_length, :total_length].to(self.m.device)
+                att = att + position
             att = att.masked_fill(bias == 0, float('-inf'))
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
