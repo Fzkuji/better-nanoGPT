@@ -2,7 +2,7 @@
 # launch as the following (e.g. in a screen session) and wait ~5 days:
 # $ torchrun --standalone --nproc_per_node=8 train.py config/train_gpt2.py
 
-wandb_log = False
+wandb_log = True
 wandb_project = 'better-nanoGPT'
 wandb_run_name='999 W128-T1024-V16384-L24'
 
@@ -45,8 +45,8 @@ block_size = 128
 n_layer = 36
 n_head = 12
 n_embd = 768
-position_embedding = 'none' # 'rope' or 'none' or 'alibi'
-max_position_embeddings = 32768
+position_embedding = 'rope' # 'rope' or 'none' or 'alibi'
+max_position_embeddings = 16384
 
 # this makes total number of tokens be 300B
 max_iters = 10000
