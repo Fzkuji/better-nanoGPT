@@ -245,7 +245,7 @@ class CausalSelfAttention(nn.Module):
         # 计算注意力
         # 注意，这里的 bias 尺寸应为 [1, 1, total_length, total_length]
         if self.flash and (self.position_embedding != 'alibi'):
-            print("using flash attention")
+            # print("using flash attention")
             y = torch.nn.functional.scaled_dot_product_attention(
                 q, k, v, attn_mask=bias,
                 dropout_p=self.dropout if self.training else 0,

@@ -29,7 +29,12 @@ data = {
                 "dataset": "pg19",
                 "batch_size": 1,        # must fit in GPU memory
                 "context_length": 16384  # size of the input to the model
-            }
+            },
+            {
+                "dataset": "openorca",
+                "batch_size": 1,  # must fit in GPU memory
+                "context_length": 16384  # size of the input to the model
+            },
         ]
     }
 }
@@ -37,10 +42,10 @@ gradient_accumulation_steps = 5 * 4  # accumulate gradients over N * batch_size 
 
 # model
 block_size = 128
-n_layer = 24
+n_layer = 36
 n_head = 12
 n_embd = 768
-position_embedding = 'alibi' # 'rope' or 'none' or 'alibi'
+position_embedding = 'none' # 'rope' or 'none' or 'alibi'
 max_position_embeddings = 32768
 
 # this makes total number of tokens be 300B
