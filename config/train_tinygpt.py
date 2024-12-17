@@ -25,6 +25,11 @@ data = {
                 "batch_size": 1,       # must fit in GPU memory
                 "context_length": 256  # size of the input to the model
             },
+            {
+                "dataset": "openorca",
+                "batch_size": 1,  # must fit in GPU memory
+                "context_length": 256  # size of the input to the model
+            },
         ]
     }
 }
@@ -44,7 +49,7 @@ lr_decay_iters = 600000
 
 # eval stuff
 eval_interval = 1000
-eval_iters = 200
+eval_iters = 2
 log_interval = 10
 
 # weight decay

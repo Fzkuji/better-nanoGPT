@@ -21,6 +21,7 @@ import time
 import datetime
 import math
 import pickle
+import json
 
 from torch.distributed.autograd import context
 from tqdm import tqdm
@@ -33,6 +34,8 @@ from torch.distributed import init_process_group, destroy_process_group
 
 from data.shakespeare.prepare import val_ids
 from model import GPTConfig, GPT
+from utils import get_lr
+from dataloader import get_batch, load_data_from_json_lines
 
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
@@ -99,7 +102,7 @@ min_lr = 6e-5  # minimum learning rate, should be ~= learning_rate/10 per Chinch
 # DDP settings
 backend = 'nccl'  # 'nccl', 'gloo', etc.
 # system
-device = 'cuda'  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
+device = 'mps'  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
 dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16'  # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
 compile = False  # use PyTorch 2.0 to compile the model to be faster
 # -----------------------------------------------------------------------------
@@ -143,28 +146,24 @@ ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torc
 ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 
 
-def get_batch(dataset, split, batch_size, length):
-    # poor man's data loader
-    data_dir = os.path.join('data', dataset)
+# -----------------------------------------------------------------------------
+# data loading functions
+# -----------------------------------------------------------------------------
 
-    # We recreate np.memmap every batch to avoid a memory leak, as per
-    # https://stackoverflow.com/questions/45132940/numpy-memmap-memory-usage-want-to-iterate-once/61472122#61472122
-    if split == 'train':
-        data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
-    else:
-        data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
+pretrain = ['openwebtext', 'pg19', 'shakespeare', 'shakespeare_char']
 
-    ix = torch.randint(len(data) - length, (batch_size,))
-    x = torch.stack([torch.from_numpy((data[i:i + length]).astype(np.int64)) for i in ix])
-    y = torch.stack([torch.from_numpy((data[i + 1:i + 1 + length]).astype(np.int64)) for i in ix])
-
-    if device_type == 'cuda':
-        # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
-        x, y = x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
-    else:
-        x, y = x.to(device), y.to(device)
-    return x, y
-
+# 遍历data，如果数据集不是pretrain中的一个，则需要用load_data_from_json_lines函数加载数据，最后数据保存在datadict中
+datadict = {}
+for split in ['train', 'val']:
+    datadict[split] = {}
+    for dataset in data[split]['datasets']:
+        if dataset['dataset'] in pretrain:
+            datadict[split][dataset['dataset']] = None
+        else:
+            datadict[split][dataset['dataset']] = load_data_from_json_lines(
+                os.path.join('data', dataset['dataset'], f'{split}.json'),
+                dataset['context_length'],
+            )
 
 # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
 iter_num = 0
@@ -260,7 +259,15 @@ def estimate_loss():
     def eval(dataset, split, batch_size, context_length):
         losses = torch.zeros(eval_iters)
         for k in tqdm(range(eval_iters), desc="Evaluating", unit="iteration"):  # use tqdm for progress bar
-            X, Y = get_batch(dataset, split, batch_size, context_length)
+            X, Y = get_batch(
+                dataset=dataset,
+                split=split,
+                data_tensor=datadict[split][dataset],
+                batch_size=batch_size,
+                length=context_length,
+                device_type=device_type,
+                device=device,
+            )
             with ctx:
                 logits, loss, _, _ = model(X, Y)
             losses[k] = loss.item()
@@ -276,21 +283,6 @@ def estimate_loss():
     return out
 
 
-# learning rate decay scheduler (cosine with warmup)
-def get_lr(it):
-    # 1) linear warmup for warmup_iters steps
-    if it < warmup_iters:
-        return learning_rate * it / warmup_iters
-    # 2) if it > lr_decay_iters, return min learning rate
-    if it > lr_decay_iters:
-        return min_lr
-    # 3) in between, use cosine decay down to min learning rate
-    decay_ratio = (it - warmup_iters) / (lr_decay_iters - warmup_iters)
-    assert 0 <= decay_ratio <= 1
-    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))  # coeff ranges 0..1
-    return min_lr + coeff * (learning_rate - min_lr)
-
-
 # logging
 if wandb_log and master_process:
     import wandb
@@ -299,10 +291,13 @@ if wandb_log and master_process:
 
 # training loop
 X, Y = get_batch(
-    data['train']['datasets'][0]['dataset'],
-    'train',
-    data['train']['datasets'][0]['batch_size'],
-    data['train']['datasets'][0]['context_length']
+    dataset=data['train']['datasets'][0]['dataset'],
+    split='train',
+    data_tensor=datadict['train'][data['train']['datasets'][0]['dataset']],
+    batch_size=data['train']['datasets'][0]['batch_size'],
+    length=data['train']['datasets'][0]['context_length'],
+    device_type = device_type,
+    device = device,
 )  # fetch the very first batch
 t0 = time.time()
 local_iter_num = 0  # number of iterations in the lifetime of this process
@@ -311,7 +306,7 @@ running_mfu = -1.0
 while True:
 
     # determine and set the learning rate for this iteration
-    lr = get_lr(iter_num) if decay_lr else learning_rate
+    lr = get_lr(iter_num, warmup_iters, lr_decay_iters, learning_rate, min_lr) if decay_lr else learning_rate
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
@@ -368,10 +363,13 @@ while True:
             loss = loss / gradient_accumulation_steps  # scale the loss to account for gradient accumulation
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
         X, Y = get_batch(
-            data['train']['datasets'][0]['dataset'],
-            'train',
-            data['train']['datasets'][0]['batch_size'],
-            data['train']['datasets'][0]['context_length']
+            dataset=data['train']['datasets'][0]['dataset'],
+            split='train',
+            data_tensor=datadict['train'][data['train']['datasets'][0]['dataset']],
+            batch_size=data['train']['datasets'][0]['batch_size'],
+            length=data['train']['datasets'][0]['context_length'],
+            device_type=device_type,
+            device=device,
         )
         # backward pass, with gradient scaling if training in fp16
         scaler.scale(loss).backward()
