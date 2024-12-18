@@ -24,23 +24,18 @@ data = {
                 "dataset": "openwebtext",
                 "batch_size": 1,       # must fit in GPU memory
                 "context_length": 256  # size of the input to the model
-            },
-            {
-                "dataset": "openorca",
-                "batch_size": 1,  # must fit in GPU memory
-                "context_length": 256  # size of the input to the model
-            },
+            }
         ]
     }
 }
-gradient_accumulation_steps = 5 * 4  # accumulate gradients over N * batch_size samples
+gradient_accumulation_steps = 4  # accumulate gradients over N * batch_size samples
 
 # model
 block_size = 32
 n_layer = 6
 n_head = 6
 n_embd = 384
-position_embedding = 'alibi' # 'rope' or 'none' or 'alibi'
+position_embedding = 'rope' # 'rope' or 'none' or 'alibi'
 max_position_embeddings = 1024
 
 # this makes total number of tokens be 300B
@@ -48,9 +43,9 @@ max_iters = 5000
 lr_decay_iters = 600000
 
 # eval stuff
-eval_interval = 1000
+eval_interval = 10
 eval_iters = 2
-log_interval = 10
+log_interval = 1
 
 # weight decay
 weight_decay = 1e-1

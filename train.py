@@ -247,6 +247,9 @@ if ddp:
 def estimate_loss():
     out = {}
     model.eval()
+    # apply sliding window to the mask
+    for i in range(config['max_position_embeddings']):
+        model.mask[:, :, i, :max(0, i - config['block_size'] + 1)] = 0  # Set values outside the window to 0
 
     def eval(dataset, split, batch_size, context_length):
         losses = torch.zeros(eval_iters)
@@ -272,6 +275,10 @@ def estimate_loss():
             print(f"estimated {split} loss for {dataset['dataset']} = {losses.item():.4f}")
 
     model.train()
+    # apply sliding window to the mask
+    for i in range(config['max_position_embeddings']):
+        model.mask[:, :, i, :max(0, i - data['train']['datasets'][0]['context_length'] + 1)] = 0  # Set values outside the window to 0
+
     return out
 
 print("model.config.position_embedding", model.config.position_embedding)
