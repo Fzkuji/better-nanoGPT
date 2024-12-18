@@ -83,7 +83,7 @@ block_size = 1024
 n_layer = 12
 n_head = 12
 n_embd = 768
-position_embedding = 'rope'
+position_embedding = 'none'
 max_position_embeddings = 2048
 dropout = 0.0  # for pretraining 0 is good, for finetuning try 0.1+
 bias = False  # do we use bias inside LayerNorm and Linear layers?
@@ -202,8 +202,10 @@ elif init_from == 'resume':
     checkpoint_model_args = checkpoint['model_args']
     # force these config attributes to be equal otherwise we can't even resume training
     # the rest of the attributes (e.g. dropout) can stay as desired from command line
-    for k in ['n_layer', 'n_head', 'n_embd', 'block_size', 'bias', 'vocab_size', 'max_position_embeddings']:
+    for k in ['n_layer', 'n_head', 'n_embd', 'block_size', 'bias', 'vocab_size', 'position_embedding', 'max_position_embeddings']:
         model_args[k] = checkpoint_model_args[k]
+    if eval_only:
+        model_args['dropout'] = 0.0
     # create the model
     gptconf = GPTConfig(**model_args)
     model = GPT(gptconf)
@@ -283,6 +285,7 @@ def estimate_loss():
     model.train()
     return out
 
+print("model.config.position_embedding", model.config.position_embedding)
 
 # logging
 if wandb_log and master_process:
@@ -312,7 +315,7 @@ while True:
         param_group['lr'] = lr
 
     # evaluate the loss on train/val sets and write checkpoints
-    if iter_num % eval_interval == 0 and master_process:
+    if (iter_num % eval_interval == 0 and master_process) or eval_only:
         losses = estimate_loss()
         train_loss_name = f'train/{data["train"]["datasets"][0]["dataset"]}'
         val_loss_name = f'val/{data["train"]["datasets"][0]["dataset"]}'
