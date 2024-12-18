@@ -250,9 +250,9 @@ def estimate_loss():
     # apply sliding window to the mask
     for i in range(config['max_position_embeddings']):
         if ddp:
-            model.module.mask[:, :, i, :max(0, i - config['block_size'] + 1)] = 0
+            model.module.bias[:, :, i, :max(0, i - config['block_size'] + 1)] = 0
         else:
-            model.mask[:, :, i, :max(0, i - config['block_size'] + 1)] = 0  # Set values outside the window to 0
+            model.bias[:, :, i, :max(0, i - config['block_size'] + 1)] = 0  # Set values outside the window to 0
 
     def eval(dataset, split, batch_size, context_length):
         losses = torch.zeros(eval_iters)
@@ -281,9 +281,9 @@ def estimate_loss():
     # apply sliding window to the mask
     for i in range(config['max_position_embeddings']):
         if ddp:
-            model.module.mask[:, :, i, :max(0, i - config['block_size'] + 1)] = 0
+            model.module.bias[:, :, i, :max(0, i - config['block_size'] + 1)] = 0
         else:
-            model.mask[:, :, i, :max(0, i - data['train']['datasets'][0]['context_length'] + 1)] = 0  # Set values outside the window to 0
+            model.bias[:, :, i, :max(0, i - data['train']['datasets'][0]['context_length'] + 1)] = 0  # Set values outside the window to 0
 
     return out
 
