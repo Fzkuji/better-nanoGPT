@@ -249,7 +249,10 @@ def estimate_loss():
     model.eval()
     # apply sliding window to the mask
     for i in range(config['max_position_embeddings']):
-        model.mask[:, :, i, :max(0, i - config['block_size'] + 1)] = 0  # Set values outside the window to 0
+        if ddp:
+            model.module.mask[:, :, i, :max(0, i - config['block_size'] + 1)] = 0
+        else:
+            model.mask[:, :, i, :max(0, i - config['block_size'] + 1)] = 0  # Set values outside the window to 0
 
     def eval(dataset, split, batch_size, context_length):
         losses = torch.zeros(eval_iters)
@@ -277,11 +280,12 @@ def estimate_loss():
     model.train()
     # apply sliding window to the mask
     for i in range(config['max_position_embeddings']):
-        model.mask[:, :, i, :max(0, i - data['train']['datasets'][0]['context_length'] + 1)] = 0  # Set values outside the window to 0
+        if ddp:
+            model.module.mask[:, :, i, :max(0, i - config['block_size'] + 1)] = 0
+        else:
+            model.mask[:, :, i, :max(0, i - data['train']['datasets'][0]['context_length'] + 1)] = 0  # Set values outside the window to 0
 
     return out
-
-print("model.config.position_embedding", model.config.position_embedding)
 
 # logging
 if wandb_log and master_process:
