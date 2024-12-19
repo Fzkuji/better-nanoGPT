@@ -274,8 +274,6 @@ def estimate_loss():
     model.train()
     return out
 
-print("model.config.position_embedding", model.config.position_embedding)
-
 # logging
 if wandb_log and master_process:
     import wandb
