@@ -160,11 +160,10 @@ for split in ['train', 'val']:
         if dataset['dataset'] in pretrain:
             datadict[split][dataset['dataset']] = None
         else:
-            if split == 'val':
-                datadict[split][dataset['dataset']] = load_data_from_json_lines(
-                    os.path.join('data', dataset['dataset'], f'{split}.json'),
-                    dataset['context_length'],
-                )
+            datadict[split][dataset['dataset']] = load_data_from_json_lines(
+                os.path.join('data', dataset['dataset'], f'{split}.json'),
+                dataset['context_length'],
+            )
 
 # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
 iter_num = 0
