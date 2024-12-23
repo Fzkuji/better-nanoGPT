@@ -273,6 +273,69 @@ def estimate_loss():
     model.train()
     return out
 
+
+# helps estimate an arbitrarily accurate loss over either split using many batches
+@torch.no_grad()
+def estimate_loss():
+    out = {}
+    model.eval()
+
+    def eval(dataset, split, batch_size, context_length):
+        losses = torch.zeros(eval_iters)
+        for k in tqdm(range(eval_iters), desc="Evaluating", unit="iteration"):  # use tqdm for progress bar
+            X, Y = get_batch(
+                dataset=dataset,
+                split=split,
+                data_tensor=datadict[split][dataset],
+                batch_size=batch_size,
+                length=context_length,
+                device_type=device_type,
+                device=device,
+            )
+            with ctx:
+                logits, loss, _, _ = model(X, Y)
+            losses[k] = loss.item()
+        return losses.mean()
+
+    split = 'train'
+    for dataset in data[split]['datasets']:
+        losses = eval(dataset['dataset'], split, dataset['batch_size'], dataset['context_length'])
+        out[f'{split}/{dataset["dataset"]}'] = losses.item()
+        print(f"estimated {split} loss for {dataset['dataset']} = {losses.item():.4f}")
+
+    split = 'val'
+
+    # apply sliding window to the mask
+    for i in range(config['max_position_embeddings']):
+        if ddp:
+            model.module.bias[:, :, i, :max(0, i - config['block_size'] + 1)] = 1
+        else:
+            model.bias[:, :, i, :max(0, i - config['block_size'] + 1)] = 1  # Set values outside the window to 0
+
+    # apply sliding window to the mask
+    for i in range(config['max_position_embeddings']):
+        if ddp:
+            model.module.bias[:, :, i, :max(0, i - data['train']['datasets'][0]['context_length'] + 1)] = 0
+        else:
+            model.bias[:, :, i, :max(0, i - data['train']['datasets'][0]['context_length'] + 1)] = 0  # Set values outside the window to 0
+
+    for dataset in data[split]['datasets']:
+        losses = eval(dataset['dataset'], split, dataset['batch_size'], dataset['context_length'])
+        out[f'{split}/{dataset["dataset"]}'] = losses.item()
+        print(f"estimated {split} loss for {dataset['dataset']} = {losses.item():.4f}")
+
+    model.train()
+
+    # apply sliding window to the mask
+    for i in range(config['max_position_embeddings']):
+        if ddp:
+            model.module.bias[:, :, i, :max(0, i - config['block_size'] + 1)] = 0
+        else:
+            model.bias[:, :, i, :max(0, i - config['block_size'] + 1)] = 0  # Set values outside the window to 0
+
+    return out
+
+
 # logging
 if wandb_log and master_process:
     import wandb
