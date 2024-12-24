@@ -312,16 +312,18 @@ def estimate_loss():
         else:
             model.bias[:, :, i, :max(0, i - config['block_size'] + 1)] = 1  # Set values outside the window to 0
 
+    head_dim = config['n_embd'] // config['n_head']
+
     # apply sliding window to the mask
     for i in range(config['max_position_embeddings']):
         if ddp:
             model.module.bias[:, :, i, :max(0, i - data['train']['datasets'][0]['context_length'] + 1)] = 0
             for i in model.module.transformer.h:
-                i.attn.rotary_emb = Qwen2RotaryEmbedding(dim=config['head_dim'], max_position_embeddings=config['max_position_embeddings'], base=80000)
+                i.attn.rotary_emb = Qwen2RotaryEmbedding(dim=head_dim, max_position_embeddings=config['max_position_embeddings'], base=80000)
         else:
             model.bias[:, :, i, :max(0, i - data['train']['datasets'][0]['context_length'] + 1)] = 0  # Set values outside the window to 0
             for i in model.transformer.h:
-                i.attn.rotary_emb = Qwen2RotaryEmbedding(dim=config['head_dim'], max_position_embeddings=config['max_position_embeddings'], base=80000)
+                i.attn.rotary_emb = Qwen2RotaryEmbedding(dim=head_dim, max_position_embeddings=config['max_position_embeddings'], base=80000)
 
     for dataset in data[split]['datasets']:
         losses = eval(dataset['dataset'], split, dataset['batch_size'], dataset['context_length'])
@@ -335,11 +337,11 @@ def estimate_loss():
         if ddp:
             model.module.bias[:, :, i, :max(0, i - config['block_size'] + 1)] = 0
             for i in model.module.transformer.h:
-                i.attn.rotary_emb = Qwen2RotaryEmbedding(dim=config['head_dim'], max_position_embeddings=config['max_position_embeddings'], base=10000)
+                i.attn.rotary_emb = Qwen2RotaryEmbedding(dim=head_dim, max_position_embeddings=config['max_position_embeddings'], base=10000)
         else:
             model.bias[:, :, i, :max(0, i - config['block_size'] + 1)] = 0  # Set values outside the window to 0
             for i in model.transformer.h:
-                i.attn.rotary_emb = Qwen2RotaryEmbedding(dim=config['head_dim'], max_position_embeddings=config['max_position_embeddings'], base=10000)
+                i.attn.rotary_emb = Qwen2RotaryEmbedding(dim=head_dim, max_position_embeddings=config['max_position_embeddings'], base=10000)
 
     return out
 
