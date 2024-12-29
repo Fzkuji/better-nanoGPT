@@ -7,7 +7,7 @@ data = {
         "datasets": [
             {
                 "dataset": "openwebtext",   # 'openwebtext' or 'shakespeare' or 'shakespeare_char' or 'pg19'
-                "batch_size": 12,           # must fit in GPU memory
+                "batch_size": 1,           # must fit in GPU memory
                 "context_length": 1024      # size of the input to the model
             }
         ]
@@ -17,12 +17,12 @@ data = {
             {
                 "dataset": "openwebtext",
                 "batch_size": 1,       # must fit in GPU memory
-                "context_length": 32768  # size of the input to the model
+                "context_length": 16384  # size of the input to the model
             },
             {
                 "dataset": "pg19",
                 "batch_size": 1,        # must fit in GPU memory
-                "context_length": 32768  # size of the input to the model
+                "context_length": 16384  # size of the input to the model
             }
         ]
     }
@@ -30,7 +30,7 @@ data = {
 
 # eval stuff
 eval_interval = 1000
-eval_iters = 200 # use more iterations to get good estimate
+eval_iters = 20 # use more iterations to get good estimate
 eval_only = True
 wandb_log = False
 init_from = 'resume'

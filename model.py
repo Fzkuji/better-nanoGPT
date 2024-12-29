@@ -13,7 +13,9 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
+from matplotlib import pyplot as plt
 from torch.nn import functional as F
+from transformers.models.cvt.convert_cvt_original_pytorch_checkpoint_to_pytorch import attention
 from transformers.utils import logging
 
 from utils import RMSNorm
@@ -164,6 +166,71 @@ def get_alibi_slope(num_heads):
     )
 
 
+import io
+import matplotlib.pyplot as plt
+import torch
+
+def visualize_attention_scores_simple(
+    attention_scores: torch.Tensor,
+    output_file: str = "attention_weights.pdf",
+    norm_type: str = "log",  # 标准化类型：可选 "log" 或 "minmax" 或 None
+    cmap: str = "plasma",    # 颜色映射：默认使用更高对比度的 plasma
+    annotate: bool = False,  # 是否在矩阵上标注数值
+    dpi: int = 300,          # 输出图像分辨率
+    show_plot: bool = True   # 是否在保存后执行 plt.show()
+):
+    """
+    不需要选择层和 Head 的注意力可视化。
+    默认假设 attention_scores 的形状是 [batch_size, seq_len, seq_len]。
+    """
+
+    # 先将注意力矩阵放到 CPU
+    attention_matrix = attention_scores.detach().cpu()  # [B, T, T]
+
+    # 假设只可视化第 0 个 batch 的注意力
+    # 如果你只有 batch_size=1，就可以直接写 attention_matrix.squeeze(0)
+    matrix_2d = attention_matrix[0][0]  # shape = [seq_len, seq_len]
+    seq_len = matrix_2d.shape[0]
+
+    # 根据需求进行标准化
+    if norm_type == "log":
+        epsilon = 1e-9
+        matrix_2d = torch.log(matrix_2d + epsilon).numpy()
+    elif norm_type == "minmax":
+        matrix_2d = matrix_2d.numpy()
+        amin, amax = matrix_2d.min(), matrix_2d.max()
+        matrix_2d = (matrix_2d - amin) / (amax - amin + 1e-9)
+    else:
+        matrix_2d = matrix_2d.numpy()
+
+    # 开始绘图
+    plt.figure(figsize=(100, 80))
+    im = plt.imshow(matrix_2d, cmap=cmap, aspect="auto")
+    plt.colorbar(im, label="Normalized Attention Score")
+
+    # 这里随意写一个标题，你可以改成你想显示的
+    plt.title("Attention Matrix")
+    plt.xlabel("Key Position")
+    plt.ylabel("Query Position")
+
+    # 是否在矩阵上标注数值
+    if annotate:
+        for i in range(seq_len):
+            for j in range(seq_len):
+                plt.text(j, i, f"{matrix_2d[i, j]:.2f}",
+                         ha="center", va="center", fontsize=6)
+
+    # 保存图像
+    plt.savefig(output_file, dpi=dpi)
+
+    # 可选：在脚本里直接展示或关闭绘图
+    if show_plot:
+        plt.show()
+    else:
+        plt.close()
+
+
+
 class CausalSelfAttention(nn.Module):
 
     def __init__(self, config):
@@ -182,7 +249,7 @@ class CausalSelfAttention(nn.Module):
         self.dropout = config.dropout
         self.block_size = config.block_size
         self.position_embedding = config.position_embedding
-        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+        self.flash = False
 
         if self.position_embedding == 'rope':
             # 初始化 RoPE 位置编码
@@ -200,6 +267,7 @@ class CausalSelfAttention(nn.Module):
         past_key_values=None,
         use_cache=False,
         bias: Optional[torch.Tensor] = None,
+        output_attentions=False,
     ):
         B, T, C = x.size()
 
@@ -258,6 +326,23 @@ class CausalSelfAttention(nn.Module):
                 att = att + self.position
             att = att.masked_fill(bias == 0, float('-inf'))
             att = F.softmax(att, dim=-1)
+
+            if output_attentions:
+                # 假设 att 的形状是 [batch_size, seq_len, seq_len]
+                # 如果 att 有别的形状，需要提前 reshape 或 slice
+                self.attention_weights = att.detach().cpu()
+
+                # 直接可视化
+                visualize_attention_scores_simple(
+                    attention_scores=self.attention_weights,  # [B, T, T]
+                    output_file="attention_weights.pdf",
+                    norm_type="log",     # 或者 "minmax"
+                    cmap="plasma",
+                    annotate=False,
+                    dpi=300,
+                    show_plot=True
+                )
+
             att = self.attn_dropout(att)
             y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
         y = y.transpose(1, 2).contiguous().view(B, T, C)  # re-assemble all head outputs side by side
@@ -293,13 +378,14 @@ class Block(nn.Module):
         self.ln_2 = RMSNorm(config.n_embd)
         self.mlp = MLP(config)
 
-    def forward(self, x, position_ids, past_key_values=None, use_cache=False, bias=None):
+    def forward(self, x, position_ids, past_key_values=None, use_cache=False, bias=None, output_attentions=False):
         attn_output, present = self.attn(
             self.ln_1(x),
             position_ids=position_ids,
             past_key_values=past_key_values,
             use_cache=use_cache,
             bias=bias,
+            output_attentions=output_attentions,
         )
         x = x + attn_output
         x = x + self.mlp(self.ln_2(x))
@@ -386,6 +472,16 @@ class GPT(nn.Module):
 
     def forward(self, idx, targets=None, past_key_values=None):
 
+
+
+        from transformers import GPT2Tokenizer
+        tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+
+        # 使其idx和text的元素一一对应print
+        for i in range(100):
+            text = tokenizer.decode(idx[0][i], skip_special_tokens=True)
+            print(idx[0][i], text)
+
         # --------------------------------------------------------------
         # Check if the input sequence length exceeds the model's memory
         # capacity and issue a warning if necessary, indicating potential
@@ -427,12 +523,18 @@ class GPT(nn.Module):
         presents = []
         for i, block in enumerate(self.transformer.h):
             past = past_key_values[i] if past_key_values is not None else None
+            if i == 18:
+                output_attentions = True
+                print("output_attentions = True")
+            else:
+                output_attentions = False
             x, present = block(
                 x,
                 position_ids=position_ids,
                 past_key_values=past,
                 use_cache=True if targets is None else False,
-                bias=self.bias[:, :, :total_length, :total_length]
+                bias=self.bias[:, :, :total_length, :total_length],
+                output_attentions=output_attentions,
             )
             if targets is None:
                 presents.append(present)
