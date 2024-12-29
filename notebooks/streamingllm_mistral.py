@@ -15,10 +15,10 @@ def prepare_model_and_tokenizer(model_name: str, load_in_8bit: bool = False):
     tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype=torch.float16 if not load_in_8bit else None,
-        load_in_8bit=load_in_8bit,
+        # torch_dtype=torch.float16 if not load_in_8bit else None,
+        # load_in_8bit=load_in_8bit,
         device_map="auto",
-        attn_implementation="eager",
+        # attn_implementation="eager",
     )
     return tokenizer, model
 
@@ -116,7 +116,7 @@ def compute_ppl_onepass(model, tokenizer, input_ids, device, mode="dense",
     """
     seq_len = len(input_ids)
     # 构造4D mask
-    attn_mask_4d = build_4d_mask(seq_len, mode=mode, window_size=window_size, anchor_size=anchor_size).to(device)
+    # attn_mask_4d = build_4d_mask(seq_len, mode=mode, window_size=window_size, anchor_size=anchor_size).to(device)
 
     # 构造模型输入 shape: [batch_size=1, seq_len]
     input_ids_tensor = torch.tensor(input_ids, dtype=torch.long, device=device).unsqueeze(0)
@@ -125,7 +125,7 @@ def compute_ppl_onepass(model, tokenizer, input_ids, device, mode="dense",
     with torch.no_grad():
         outputs = model(
             input_ids=input_ids_tensor,
-            attention_mask=attn_mask_4d
+            # attention_mask=attn_mask_4d
         )
         # logits shape => [1, seq_len, vocab_size]
         logits = outputs.logits
@@ -159,16 +159,16 @@ def main():
     """
     演示主函数：一次性前向 + 4D attention_mask 来区分 Dense/Window/Sliding/Streaming。
     """
-    model_name = "meta-llama/Llama-3.1-8B-Instruct"  # 或本地的 checkpoint (e.g., "meta-llama/Llama-2-7b-chat-hf")
+    model_name = "mistralai/Mistral-7B-Instruct-v0.1"  # 或本地的 checkpoint (e.g., "meta-llama/Llama-2-7b-chat-hf")
     tokenizer, model = prepare_model_and_tokenizer(model_name, load_in_8bit=False)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # 扩展model的max_position_embeddings
-    model.config.max_position_embeddings = 8192
+    model.config.sliding_window = 4096
 
     # 1) 取 PG19 的一个简短文本
     raw_text = load_pg19_index_book(index=0)
-    input_ids = tokenize_text(tokenizer, raw_text, max_tokens=8192)
+    input_ids = tokenize_text(tokenizer, raw_text, max_tokens=16384)
     seq_len = len(input_ids)
     print(f"Total tokens: {seq_len}")
 
@@ -177,18 +177,18 @@ def main():
     ppl_dense = compute_ppl_onepass(model, tokenizer, input_ids, device, mode="dense")
     print(f"Perplexity (Dense): {ppl_dense:.2f}\n")
 
-    window_size = 4096
-    #
-    print("=== (b) Sliding Window ===")
-    ppl_sliding = compute_ppl_onepass(model, tokenizer, input_ids, device,
-                                      mode="sliding", window_size=window_size)
-    print(f"Perplexity (Sliding, size={window_size}): {ppl_sliding:.2f}\n")
+    # window_size = 4096
+    # #
+    # print("=== (b) Sliding Window ===")
+    # ppl_sliding = compute_ppl_onepass(model, tokenizer, input_ids, device,
+    #                                   mode="sliding", window_size=window_size)
+    # print(f"Perplexity (Sliding, size={window_size}): {ppl_sliding:.2f}\n")
 
-    anchor_size = 10
-    print("=== (c) StreamingLLM (Anchor+Window) ===")
-    ppl_streaming = compute_ppl_onepass(model, tokenizer, input_ids, device,
-                                        mode="streaming", window_size=window_size, anchor_size=anchor_size)
-    print(f"Perplexity (Streaming, anchor={anchor_size}, window={window_size}): {ppl_streaming:.2f}\n")
+    # anchor_size = 10
+    # print("=== (c) StreamingLLM (Anchor+Window) ===")
+    # ppl_streaming = compute_ppl_onepass(model, tokenizer, input_ids, device,
+    #                                     mode="streaming", window_size=window_size, anchor_size=anchor_size)
+    # print(f"Perplexity (Streaming, anchor={anchor_size}, window={window_size}): {ppl_streaming:.2f}\n")
 
 
 if __name__ == "__main__":

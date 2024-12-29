@@ -163,13 +163,13 @@ def main():
     """
     演示主函数：一次性前向 + 4D attention_mask 来区分 Dense/Window/Sliding/Streaming。
     """
-    model_name = "Qwen/Qwen2.5-7B-Instruct"  # 或本地的 checkpoint  (e.g., "Qwen/Qwen2-7B-Instruct")
+    model_name = "Qwen/Qwen2.5-3B-Instruct"  # 或本地的 checkpoint  (e.g., "Qwen/Qwen2-7B-Instruct")
     tokenizer, model = prepare_model_and_tokenizer(model_name, load_in_8bit=False)
-    device = "cuda" if torch.cuda.is_available() else "mps"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # 1) 取 PG19 的一个简短文本
     raw_text = load_pg19_index_book(index=0)
-    input_ids = tokenize_text(tokenizer, raw_text, max_tokens=4096)
+    input_ids = tokenize_text(tokenizer, raw_text, max_tokens=8192)
     seq_len = len(input_ids)
     print(f"Total tokens: {seq_len}")
 
@@ -178,7 +178,7 @@ def main():
     ppl_dense = compute_ppl_onepass(model, tokenizer, input_ids, device, mode="dense")
     print(f"Perplexity (Dense): {ppl_dense:.2f}\n")
 
-    window_size = 1024
+    window_size = 4096
     #
     print("=== (b) Sliding Window ===")
     ppl_sliding = compute_ppl_onepass(model, tokenizer, input_ids, device,
