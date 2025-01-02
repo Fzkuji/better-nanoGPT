@@ -189,6 +189,11 @@ class CausalSelfAttention(nn.Module):
         if self.position_embedding == 'rope':
             # 初始化 RoPE 位置编码
             self.rotary_emb = Qwen2RotaryEmbedding(dim=self.head_dim, max_position_embeddings=config.max_position_embeddings)
+        elif self.position_embedding == 'alibi' and not self.flash:
+            self.register_buffer("m", get_alibi_slope(self.n_head))
+            self.input_length = 0
+        else:
+            pass
 
     def forward(
         self,
@@ -222,6 +227,10 @@ class CausalSelfAttention(nn.Module):
             # 应用 RoPE 位置编码
             cos, sin = self.rotary_emb(q, position_ids=position_ids)
             q, k = apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1)
+        elif self.position_embedding == 'alibi' and not self.flash:
+            if (self.input_length != total_length) or (self.position is None):
+                self.position = (self.m * get_relative_positions(total_length).to(x.device)).unsqueeze(0)
+            self.input_length = total_length
 
         # 拼接 past_key_values
         if use_cache and past_key_values is not None:
@@ -246,15 +255,15 @@ class CausalSelfAttention(nn.Module):
                 window_size=(self.block_size, -1),
                 alibi_slopes=self.n_head if self.position_embedding == 'alibi' else None,
             )
-        elif self.position_embedding != 'alibi':
+        else:
             # manual implementation of attention
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+            if self.position_embedding == 'alibi':
+                att = att + self.position
             att = att.masked_fill(bias == 0, float('-inf'))
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
             y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        else:
-            raise NotImplementedError("Alibi position embedding is not supported with manual attention")
         y = y.transpose(1, 2).contiguous().view(B, T, C)  # re-assemble all head outputs side by side
 
         # output projection
