@@ -201,7 +201,7 @@ class CausalSelfAttention(nn.Module):
         position_ids,
         past_key_values=None,
         use_cache=False,
-        attention_mask: Optional[torch.Tensor] = None,
+        bias: Optional[torch.Tensor] = None,
     ):
         B, T, C = x.size()
 
@@ -245,7 +245,7 @@ class CausalSelfAttention(nn.Module):
             present = None
 
         # 计算注意力
-        # 注意，这里的 attention_mask 尺寸应为 [1, 1, total_length, total_length]
+        # 注意，这里的 bias 尺寸应为 [1, 1, total_length, total_length]
         if self.flash:
             # print("using flash attention")
             y = flash_attn_func(
@@ -260,7 +260,7 @@ class CausalSelfAttention(nn.Module):
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
             if self.position_embedding == 'alibi':
                 att = att + self.position
-            att = att.masked_fill(attention_mask == 0, float('-inf'))
+            att = att.masked_fill(bias == 0, float('-inf'))
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
             y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
@@ -297,13 +297,13 @@ class Block(nn.Module):
         self.ln_2 = RMSNorm(config.n_embd)
         self.mlp = MLP(config)
 
-    def forward(self, x, position_ids, past_key_values=None, use_cache=False, attention_mask=None):
+    def forward(self, x, position_ids, past_key_values=None, use_cache=False, bias=None):
         attn_output, present = self.attn(
             self.ln_1(x),
             position_ids=position_ids,
             past_key_values=past_key_values,
             use_cache=use_cache,
-            attention_mask=attention_mask,
+            bias=bias,
         )
         x = x + attn_output
         x = x + self.mlp(self.ln_2(x))
@@ -361,9 +361,9 @@ class GPT(nn.Module):
         # apply sliding window to the mask
         for i in range(config.max_position_embeddings):
             mask[i, :max(0, i - self.config.block_size + 1)] = 0  # Set values outside the window to 0
-        mask = mask.bool() if self.flash else mask  # 将attention mask转换为torch.bool类型
+        mask = mask.bool() if self.flash else mask  # 将bias转换为torch.bool类型
 
-        self.register_buffer("attention_mask", mask.view(1, 1, config.max_position_embeddings, config.max_position_embeddings))
+        self.register_buffer("bias", mask.view(1, 1, config.max_position_embeddings, config.max_position_embeddings))
 
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params() / 1e6,))
@@ -436,7 +436,7 @@ class GPT(nn.Module):
                 position_ids=position_ids,
                 past_key_values=past,
                 use_cache=True if targets is None else False,
-                attention_mask=self.attention_mask[:, :, :total_length, :total_length]
+                bias=self.bias[:, :, :total_length, :total_length]
             )
             if targets is None:
                 presents.append(present)
@@ -553,18 +553,6 @@ class GPT(nn.Module):
                 continue
 
         return model
-
-    def set_block_size(self, block_size):
-        self.config.block_size = block_size
-
-        assert self.attention_mask is not None, "attention mask is not initialized"
-
-        for i in range(self.config.max_position_embeddings):
-            self.attention_mask[:, :, i, :i + 1] = 1
-
-        for i in range(self.config.max_position_embeddings):
-            self.attention_mask[:, :, i, :max(0, i - block_size + 1)] = 0
-
 
     def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
         # start with all of the candidate parameters
