@@ -257,7 +257,7 @@ class CausalSelfAttention(nn.Module):
             if self.position_embedding == 'alibi':
                 att = att + self.position
             att = att.masked_fill(bias == 0, float('-inf'))
-            att = F.softmax(att, dim=-1)
+            att = F.softmax(att, dim=-1)    # 若改成sigmoid 则代码为 F.sigmoid(att)
             att = self.attn_dropout(att)
             y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
         y = y.transpose(1, 2).contiguous().view(B, T, C)  # re-assemble all head outputs side by side
@@ -460,6 +460,17 @@ class GPT(nn.Module):
             loss = None
 
         return logits, loss, segment_loss, presents if targets is None else None
+
+    def set_block_size(self, block_size):
+        self.config.block_size = block_size
+
+        assert self.bias is not None, "attention mask is not initialized"
+
+        for i in range(self.config.max_position_embeddings):
+            self.bias[:, :, i, :i + 1] = 1
+
+        for i in range(self.config.max_position_embeddings):
+            self.bias[:, :, i, :max(0, i - block_size + 1)] = 0
 
     @classmethod
     def from_pretrained(cls, model_type, override_args=None):
