@@ -16,6 +16,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 from transformers.utils import logging
 
+from flash_attn import flash_attn_qkvpacked_func, flash_attn_func
 from utils import RMSNorm
 import warnings
 
@@ -159,8 +160,6 @@ def get_alibi_slope(num_heads):
     x = (2 ** 8) ** (1 / num_heads)
     return (
         torch.tensor([1 / x ** (i + 1) for i in range(num_heads)])
-        .unsqueeze(-1)
-        .unsqueeze(-1)
     )
 
 
@@ -188,7 +187,7 @@ class CausalSelfAttention(nn.Module):
             # 初始化 RoPE 位置编码
             self.rotary_emb = Qwen2RotaryEmbedding(dim=self.head_dim, max_position_embeddings=config.max_position_embeddings)
         elif self.position_embedding == 'alibi':
-            self.register_buffer("m", get_alibi_slope(self.n_head))
+            self.register_buffer("m", get_alibi_slope(self.n_head).unsqueeze(-1).unsqueeze(-1))
             self.input_length = 0
         else:
             pass
@@ -230,26 +229,17 @@ class CausalSelfAttention(nn.Module):
                 self.position = (self.m * get_relative_positions(total_length).to(x.device)).unsqueeze(0)
             self.input_length = total_length
 
-        # 拼接 past_key_values
-        if use_cache and past_key_values is not None:
-            past_keys, past_values = past_key_values
-            k = torch.cat((past_keys, k), dim=2)
-            v = torch.cat((past_values, v), dim=2)
-
-        # 更新 present
-        if use_cache:
-            present = (k[:, :, -self.block_size:], v[:, :, -self.block_size:])
-        else:
-            present = None
-
         # 计算注意力
         # 注意，这里的 bias 尺寸应为 [1, 1, total_length, total_length]
-        if self.flash and (self.position_embedding != 'alibi'):
+        if self.flash:
+            q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
             # print("using flash attention")
-            y = torch.nn.functional.scaled_dot_product_attention(
-                q, k, v, attn_mask=bias,
+            y = flash_attn_func(
+                q, k, v,
                 dropout_p=self.dropout if self.training else 0,
-                is_causal=False
+                causal=True,
+                window_size=(self.block_size, 0),
+                alibi_slopes=get_alibi_slope(self.n_head).to(x.device) if self.position_embedding == 'alibi' else None,
             )
         else:
             # manual implementation of attention
@@ -257,14 +247,15 @@ class CausalSelfAttention(nn.Module):
             if self.position_embedding == 'alibi':
                 att = att + self.position
             att = att.masked_fill(bias == 0, float('-inf'))
-            att = F.softmax(att, dim=-1)    # 若改成sigmoid 则代码为 F.sigmoid(att)
+            att = F.softmax(att, dim=-1)    # F.sigmoid(att) if you want to use sigmoid
             att = self.attn_dropout(att)
             y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        y = y.transpose(1, 2).contiguous().view(B, T, C)  # re-assemble all head outputs side by side
+            y = y.transpose(1, 2)
+        y = y.contiguous().view(B, T, C)  # re-assemble all head outputs side by side
 
         # output projection
         y = self.resid_dropout(self.c_proj(y))
-        return y, present
+        return y, None
 
 
 class MLP(nn.Module):

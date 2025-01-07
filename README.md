@@ -108,7 +108,7 @@ python data/openwebtext/prepare.py
 This downloads and tokenizes the [OpenWebText](https://huggingface.co/datasets/openwebtext) dataset. It will create a `train.bin` and `val.bin` which holds the GPT2 BPE token ids in one sequence, stored as raw uint16 bytes. Then we're ready to kick off training. To reproduce GPT-2 (124M) you'll want at least an 8X A100 40GB node and run:
 
 ```sh
-torchrun --standalone --nproc_per_node=8 train.py config/train_gpt2.py
+CUDA_VISIBLE_DEVICES=2,3 torchrun --nproc_per_node=2 --master_port=39485 train.py config/train_gpt2.py
 ```
 
 This will run for about 4 days using PyTorch Distributed Data Parallel (DDP) and go down to loss of ~2.85. Now, a GPT-2 model just evaluated on OWT gets a val loss of about 3.11, but if you finetune it it will come down to ~2.85 territory (due to an apparent domain gap), making the two models ~match.
