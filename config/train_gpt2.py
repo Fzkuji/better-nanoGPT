@@ -4,7 +4,7 @@
 
 wandb_log = True
 wandb_project = 'better-nanoGPT'
-wandb_run_name='999 W128-T2048-V8192-L24'
+wandb_run_name='999 W128-T1024-V16384-L24'
 
 # these make the total batch size be ~0.5M
 # 12 batch_size * 1024 context_length * 5 gradaccum * 4 GPUs = 245,760
@@ -12,9 +12,9 @@ data = {
     "train": {
         "datasets": [
             {
-                "dataset": "openorca",   # 'openwebtext' or 'shakespeare' or 'shakespeare_char' or 'pg19'
-                "batch_size": 15,           # must fit in GPU memory
-                "context_length": 2048      # size of the input to the model
+                "dataset": "openwebtext",   # 'openwebtext' or 'shakespeare' or 'shakespeare_char' or 'pg19'
+                "batch_size": 30,           # must fit in GPU memory
+                "context_length": 1024      # size of the input to the model
             }
         ]
     },
@@ -22,18 +22,18 @@ data = {
         "datasets": [
             {
                 "dataset": "openwebtext",
-                "batch_size": 8,       # must fit in GPU memory
-                "context_length": 8192  # size of the input to the model
+                "batch_size": 2,       # must fit in GPU memory
+                "context_length": 16384  # size of the input to the model
             },
             {
                 "dataset": "pg19",
-                "batch_size": 8,        # must fit in GPU memory
-                "context_length": 8192  # size of the input to the model
+                "batch_size": 2,        # must fit in GPU memory
+                "context_length": 16384  # size of the input to the model
             },
             {
                 "dataset": "openorca",
-                "batch_size": 8,  # must fit in GPU memory
-                "context_length": 8192  # size of the input to the model
+                "batch_size": 2,  # must fit in GPU memory
+                "context_length": 16384  # size of the input to the model
             },
         ]
     }
