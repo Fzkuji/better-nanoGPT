@@ -157,11 +157,21 @@ def get_relative_positions(seq_len: int) -> torch.tensor:
     return x - y
 
 
+# def get_alibi_slope(num_heads):
+#     x = (2 ** 8) ** (1 / num_heads)
+#     return (
+#         torch.tensor([1 / x ** (i + 1) for i in range(num_heads)])
+#     )
+
 def get_alibi_slope(num_heads):
     x = (2 ** 8) ** (1 / num_heads)
-    return (
-        torch.tensor([1 / x ** (i + 1) for i in range(num_heads)])
-    )
+    # 生成正值的一半 slopes
+    pos_slopes = torch.tensor([1 / x ** (i + 1) for i in range(int(num_heads / 1.5))])
+    # 生成负值的一半 slopes
+    neg_slopes = torch.tensor([1 / x ** (i + 1) for i in range(int(num_heads / 3))])
+    # 拼接正值和负值，形成对称 Tensor
+    full_slopes = torch.cat([-neg_slopes, pos_slopes.flip(0)])
+    return full_slopes
 
 
 class CausalSelfAttention(nn.Module):
