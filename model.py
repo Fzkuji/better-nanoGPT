@@ -17,6 +17,7 @@ from torch.nn import functional as F
 from transformers.utils import logging
 
 from flash_attn import flash_attn_qkvpacked_func, flash_attn_func
+from flash_sigmoid import flash_attn_func as flash_sigmoid_func
 from utils import RMSNorm
 import warnings
 
@@ -156,11 +157,21 @@ def get_relative_positions(seq_len: int) -> torch.tensor:
     return x - y
 
 
+# def get_alibi_slope(num_heads):
+#     x = (2 ** 8) ** (1 / num_heads)
+#     return (
+#         torch.tensor([1 / x ** (i + 1) for i in range(num_heads)])
+#     )
+
 def get_alibi_slope(num_heads):
     x = (2 ** 8) ** (1 / num_heads)
-    return (
-        torch.tensor([1 / x ** (i + 1) for i in range(num_heads)])
-    )
+    # 生成正值的一半 slopes
+    pos_slopes = torch.tensor([1 / x ** (i + 1) for i in range(int(num_heads / 1.5))])
+    # 生成负值的一半 slopes
+    neg_slopes = torch.tensor([1 / x ** (i + 1) for i in range(int(num_heads / 3))])
+    # 拼接正值和负值，形成对称 Tensor
+    full_slopes = torch.cat([-neg_slopes, pos_slopes.flip(0)])
+    return full_slopes
 
 
 class CausalSelfAttention(nn.Module):
@@ -186,7 +197,7 @@ class CausalSelfAttention(nn.Module):
         if self.position_embedding == 'rope':
             # 初始化 RoPE 位置编码
             self.rotary_emb = Qwen2RotaryEmbedding(dim=self.head_dim, max_position_embeddings=config.max_position_embeddings)
-        elif self.position_embedding == 'alibi':
+        elif self.position_embedding == 'alibi' and not self.flash:
             self.register_buffer("m", get_alibi_slope(self.n_head).unsqueeze(-1).unsqueeze(-1))
             self.input_length = 0
         else:
@@ -224,7 +235,7 @@ class CausalSelfAttention(nn.Module):
             # 应用 RoPE 位置编码
             cos, sin = self.rotary_emb(q, position_ids=position_ids)
             q, k = apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1)
-        elif self.position_embedding == 'alibi':
+        elif self.position_embedding == 'alibi' and not self.flash:
             if (self.input_length != total_length) or (self.position is None):
                 self.position = (self.m * get_relative_positions(total_length).to(x.device)).unsqueeze(0)
             self.input_length = total_length
@@ -234,6 +245,7 @@ class CausalSelfAttention(nn.Module):
         if self.flash:
             q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
             # print("using flash attention")
+            # y = flash_sigmoid_func(
             y = flash_attn_func(
                 q, k, v,
                 dropout_p=self.dropout if self.training else 0,
